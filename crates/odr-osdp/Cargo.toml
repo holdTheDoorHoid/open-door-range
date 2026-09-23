@@ -4,5 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "OSDP v2.2.2 frame, command/reply and secure-channel library for the Open Door Range"
 
 [dependencies]
+aes = { workspace = true, default-features = false }
+
+[features]
+# `std` only adds `std::error::Error` impls for the error types. The crate is
+# otherwise `no_std` + `alloc`, which is what keeps it honest about the
+# "no clocks, no threads, no OS randomness" rule in DESIGN.md section 3.
+default = ["std"]
+std = []

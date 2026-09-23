@@ -23,6 +23,12 @@ byte-level frame inspection, a frame composer, key management, bus timing.
 protocols are broken by design, OSDP is sold as the fix, and OSDP's own failures are
 what most of this teaches.
 
+### Track 0 — the credential
+- 125 kHz: EM4100 and HID Prox (H10301 over the air), modulation, cloning
+- 13.56 MHz: MIFARE Classic and Crypto1, contrasted with DESFire EV2 and Seos, which hold
+- Non-simulated reference section on mechanical and sensor bypass, included deliberately
+  so the course does not leave a learner with a miscalibrated sense of where risk lives
+
 ### Track 1 — legacy wire protocols
 - Wiegand 26 / 34 / 37-bit and H10301-family formats: facility code, card number, parity
 - D0/D1 pulse train, timing, idle-high signalling
@@ -62,6 +68,8 @@ with. The same crates build a command-line tool.
 ```
 open-door-range/
   crates/
+    odr-credential/ the card layer: 125 kHz EM4100 and HID Prox, 13.56 MHz MIFARE
+                    Classic and Crypto1, DESFire/Seos as the working contrast
     odr-wiegand/    Wiegand + clock-and-data: formats, parity, bit streams, pulse timing
     odr-osdp/       frames, command/reply set, CRC + checksum, secure channel, AES-128
     odr-bus/        virtual RS-485 multidrop and virtual Wiegand wire; ACU and PD state
@@ -129,6 +137,7 @@ own bus would look like under each attack.
 1. Workspace, licence, CI, Pages skeleton
 2. `odr-osdp` — frames and secure channel, unit-tested against known vectors
 3. `odr-wiegand` — formats and timing
+3b. `odr-credential` — the card layer
 4. `odr-bus` — ACU/PD state machines and taps
 5. `odr-attack` and `odr-detect`
 6. `odr-scenario` and the drill content

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/odr-credential",
     "crates/odr-wiegand",
     "crates/odr-osdp",
     "crates/odr-bus",
@@ -19,6 +20,7 @@ repository = "https://github.com/holdTheDoorHoid/open-door-range"
 authors = ["Open Door Range contributors"]
 
 [workspace.dependencies]
+odr-credential = { path = "crates/odr-credential" }
 odr-wiegand = { path = "crates/odr-wiegand" }
 odr-osdp = { path = "crates/odr-osdp" }
 odr-bus = { path = "crates/odr-bus" }

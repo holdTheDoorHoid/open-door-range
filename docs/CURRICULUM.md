@@ -10,6 +10,53 @@ sandbox with objectives, hints on request), **Gold** (an objective and nothing e
 
 ---
 
+## Module 0 — The credential
+
+Before the wire, the card. This module exists because the reader was never the weak part,
+and a learner who starts at Wiegand has already skipped the cheapest attack in the
+building.
+
+**0.1 What a prox card is** · Bronze
+A 125 kHz EM4100 tag: no processor, no key, no challenge. It shouts its number at anything
+that energises it, forever, to anyone.
+*Flag:* the learner reads a tag's ID off the modulated carrier and matches the engine's
+value.
+
+**0.2 Cloning 125 kHz** · Bronze
+Copy the number onto a writable tag. There is nothing to defeat — the format has no
+concept of authentication.
+*Flag:* a cloned tag presents to the reader and the controller grants, where the original
+tag was never presented.
+
+**0.3 HID Prox and the format problem** · Silver
+H10301 over the air. The same facility-code-and-card-number payload you will meet again on
+the wire in Module 1 — and seeing it twice is the point, because the credential and the
+wire protocol carry the identical bits with the identical absence of protection.
+*Flag:* the learner extracts facility code and card number from the RF layer, then
+predicts the exact Wiegand bit pattern the reader will emit before it emits it.
+
+**0.4 13.56 MHz: the upgrade that mostly was not** · Silver
+MIFARE Classic, its sector keys, and Crypto1 — a cipher broken in 2008 and still on
+badges today. What a nested attack recovers and how fast.
+*Flag:* attacker recovers all sector keys from a simulated card given only observed reader
+traffic, then reads the credential block.
+
+**0.5 The ones that hold up** · Bronze
+DESIGNED CONTRAST: DESFire EV2 and Seos do real mutual authentication with real keys.
+Present the same attacks; watch them fail.
+*Flag:* the learner runs 0.2 and 0.4's attacks against a DESFire card and records why each
+one stops — the drill passes on correct diagnosis, not on a successful attack.
+
+**0.6 The attacks that skip all of this** · Reference, not simulated
+Request-to-exit sensors triggered from outside, door position switches, crash bars,
+under-door tools, and the plain fact that many doors are opened by defeating the
+*mechanics* rather than the electronics. This section does not simulate anything and says
+so. It is here because a course that teaches only the electronic attacks leaves a learner
+with a badly calibrated sense of where the risk is — and because a defender who hardens
+the bus and leaves a gap under the door has bought nothing.
+
+---
+
 ## Module 1 — The wire (Wiegand)
 
 **1.1 What a badge actually says** · Bronze
