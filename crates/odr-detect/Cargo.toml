@@ -4,5 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "The Open Door Range defensive half: what a passive monitor on a reader-to-panel link can conclude, and when"
 
 [dependencies]
+# A detector sees bytes and timing. It gets those from odr-bus's capture format
+# and decodes them with odr-osdp and odr-wiegand. It deliberately does not
+# reach for anything else, because there is nothing else on the wire.
+odr-bus = { workspace = true }
+odr-osdp = { workspace = true }
+odr-wiegand = { workspace = true }
+
+[features]
+# `std` only adds `std::error::Error` impls for the error type. Everything
+# else is `no_std` + `alloc`, so the crate builds for wasm32-unknown-unknown
+# either way, exactly as in odr-bus and odr-osdp. See DESIGN.md section 3.
+default = ["std"]
+std = []
