@@ -31,6 +31,9 @@
 //! Faithfully implemented, and deliberately not repaired:
 //!
 //! * **The MAC is truncated to 32 bits.** See [`crate::crypto::truncate_mac`].
+//!   [`SecureChannel::set_mac_len`] can shorten it further, which the protocol
+//!   does not permit and which exists only so curriculum drill 4.2 completes
+//!   while a learner is watching.
 //! * **IVs come from MACs.** Encryption IVs are the ones' complement of the
 //!   previous MAC in the opposite direction, so they are fully predictable from
 //!   traffic already seen. Worse, the chain in one direction only advances when
@@ -57,8 +60,8 @@
 use crate::codes::{Command, Reply};
 use crate::crypto::{
     cbc_decrypt, cbc_encrypt, cbc_mac, client_cryptogram, derive_session_keys, ecb_encrypt_block,
-    iv_from_mac, pad_for_encryption, server_cryptogram, strip_padding, truncate_mac, SessionKeys,
-    BLOCK,
+    iv_from_mac, pad_for_encryption, server_cryptogram, strip_padding, truncate_mac_to,
+    SessionKeys, BLOCK, WIRE_MAC_LEN,
 };
 use crate::frame::Frame;
 use crate::payload::{Ccrypt, PayloadError};
@@ -249,6 +252,7 @@ pub struct SecureChannel {
     server_cryptogram: [u8; BLOCK],
     c_mac: [u8; BLOCK],
     r_mac: [u8; BLOCK],
+    mac_len: u8,
 }
 
 impl SecureChannel {
@@ -266,6 +270,7 @@ impl SecureChannel {
             server_cryptogram: [0; BLOCK],
             c_mac: [0; BLOCK],
             r_mac: [0; BLOCK],
+            mac_len: WIRE_MAC_LEN as u8,
         }
     }
 
@@ -292,6 +297,39 @@ impl SecureChannel {
     /// Where the handshake has got to.
     pub fn state(&self) -> ChannelState {
         self.state
+    }
+
+    /// How many MAC bytes carry strength on this channel. **Four by default,
+    /// which is what OSDP does.**
+    ///
+    /// See [`SecureChannel::set_mac_len`]; anything below four is a teaching
+    /// device and not a protocol option.
+    pub fn mac_len(&self) -> u8 {
+        self.mac_len
+    }
+
+    /// **Shorten the effective MAC. A teaching device, not a protocol option.**
+    ///
+    /// OSDP transmits four MAC bytes and offers no way to change that. A blind
+    /// forgery against those four bytes succeeds about one time in four
+    /// billion, which is a number a learner can be told but cannot be shown.
+    /// Setting this to 1 or 2 makes curriculum drill 4.2 complete while a
+    /// learner is watching, at the cost of being a lie about the protocol —
+    /// which is why the drill runs the genuine 32-bit search alongside it on a
+    /// bar that never finishes (`docs/UI.md`).
+    ///
+    /// Four MAC bytes still go on the wire; the ones beyond `len` are zero, so
+    /// no frame layout, parser or capture changes, and the rigging is visible
+    /// to anybody looking at the bus. Clamped to `1..=4`. Set it before the
+    /// handshake; both ends must agree.
+    pub fn set_mac_len(&mut self, len: u8) {
+        self.mac_len = len.clamp(crate::crypto::MIN_TEACHING_MAC_LEN, WIRE_MAC_LEN as u8);
+    }
+
+    /// Builder form of [`SecureChannel::set_mac_len`].
+    pub fn with_mac_len(mut self, len: u8) -> Self {
+        self.set_mac_len(len);
+        self
     }
 
     /// The derived session keys, once the challenge has been processed.
@@ -615,7 +653,7 @@ impl SecureChannel {
             Some(m) => m,
             None => return Err(ChannelError::WrongState { state: self.state }),
         };
-        frame.mac = Some(truncate_mac(&full));
+        frame.mac = Some(truncate_mac_to(&full, self.mac_len));
         if is_cmd {
             self.c_mac = full;
         } else {
@@ -657,7 +695,7 @@ impl SecureChannel {
             Some(m) => m,
             None => return Err(ChannelError::WrongState { state: self.state }),
         };
-        let expected = truncate_mac(&full);
+        let expected = truncate_mac_to(&full, self.mac_len);
         if expected != carried {
             return Err(ChannelError::MacMismatch {
                 got: carried,
@@ -772,6 +810,7 @@ pub fn recover_weak_scbk(
 mod tests {
     use super::*;
     use crate::codes::{Command, Reply};
+    use crate::crypto::truncate_mac;
     use crate::frame::Frame;
     use crate::weak_keys::SCBK_D;
     use alloc::vec;
@@ -1064,6 +1103,45 @@ mod tests {
             "same key, same IV, same plaintext, same ciphertext"
         );
         assert_ne!(a.mac, b.mac, "the MACs do differ: the C-MAC chain advanced");
+    }
+
+    /// The teaching knob: the wire field stays four bytes, and only the first
+    /// `mac_len` of them carry strength.
+    #[test]
+    fn a_shortened_mac_keeps_the_frame_layout_and_zeroes_the_rest() {
+        let mut acu = SecureChannel::acu(SCBK_D, KeyType::Default).with_mac_len(1);
+        let mut pd = SecureChannel::pd(SCBK_D, KeyType::Default, [0xC0; 8]).with_mac_len(1);
+        let chlng = acu.challenge(0x01, 0, [0x11; 8]).unwrap();
+        let ccrypt = pd.handle_challenge(&chlng, [0x22; 8]).unwrap();
+        let scrypt = acu.handle_ccrypt(&ccrypt, 1).unwrap();
+        let rmac = pd.handle_scrypt(&scrypt).unwrap();
+        acu.handle_rmac_i(&rmac).unwrap();
+
+        let f = acu.seal(1, 1, Command::Poll.to_u8(), &[], false).unwrap();
+        let mac = f.mac.unwrap();
+        assert_eq!(mac[1..], [0, 0, 0], "only one byte carries strength");
+        assert_eq!(mac[0], acu.c_mac()[0]);
+        // Four bytes still go on the wire, so nothing about the frame changes.
+        let bare = Frame::command(1, 1, Command::Poll, vec![]);
+        assert_eq!(f.declared_len(), bare.declared_len() + 2 + 4);
+        assert_eq!(pd.open(&f).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn the_default_mac_length_is_four_and_matches_truncate_mac() {
+        let (mut acu, _pd) = handshake(SCBK_D);
+        assert_eq!(acu.mac_len(), 4);
+        let f = acu.seal(1, 1, Command::Poll.to_u8(), &[], false).unwrap();
+        assert_eq!(f.mac, Some(truncate_mac(&acu.c_mac())));
+    }
+
+    #[test]
+    fn mac_length_is_clamped_to_something_the_wire_can_carry() {
+        let mut ch = SecureChannel::acu(SCBK_D, KeyType::Default);
+        ch.set_mac_len(0);
+        assert_eq!(ch.mac_len(), 1);
+        ch.set_mac_len(99);
+        assert_eq!(ch.mac_len(), 4);
     }
 
     #[test]

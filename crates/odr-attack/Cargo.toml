@@ -4,5 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "The attacker actors of the Open Door Range: sniff, replay, implant, downgrade, install mode, weak keys, keyset capture, traffic analysis, IV reuse and MAC forgery"
 
 [dependencies]
+odr-bus = { workspace = true }
+odr-credential = { workspace = true }
+odr-osdp = { workspace = true }
+odr-wiegand = { workspace = true }
+
+[features]
+# `std` only adds `std::error::Error` impls, here and downstream. Everything
+# else is `no_std` + `alloc`, so the crate builds for wasm32-unknown-unknown
+# either way. See DESIGN.md section 3.
+default = ["std"]
+std = ["odr-bus/std", "odr-osdp/std"]

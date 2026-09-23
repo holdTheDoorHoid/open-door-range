@@ -77,6 +77,12 @@ pub struct AcuConfig {
     pub drive_pd_output: bool,
     /// Which output number `CMD_OUT` addresses.
     pub output_number: u8,
+    /// **How many MAC bytes carry strength. Four, unless a drill rigs it.**
+    ///
+    /// The controller-side twin of [`PdConfig::mac_len`](crate::PdConfig::mac_len);
+    /// see that field. Four is the only value OSDP has, and it is the default.
+    /// Both ends must agree, or every session frame fails its MAC check.
+    pub mac_len: u8,
 }
 
 impl Default for AcuConfig {
@@ -95,6 +101,7 @@ impl Default for AcuConfig {
             install_mode: false,
             drive_pd_output: true,
             output_number: 0,
+            mac_len: 4,
         }
     }
 }
@@ -134,6 +141,12 @@ impl AcuConfig {
     /// Turn install mode on or off.
     pub fn in_install_mode(mut self, yes: bool) -> AcuConfig {
         self.install_mode = yes;
+        self
+    }
+
+    /// Rig the MAC width for curriculum drill 4.2. See [`AcuConfig::mac_len`].
+    pub fn with_mac_len(mut self, len: u8) -> AcuConfig {
+        self.mac_len = len.clamp(1, 4);
         self
     }
 }
@@ -536,7 +549,8 @@ impl Controller {
             }
             SessionStage::NeedsSecureChannel => {
                 let seq = session.advance_sequence();
-                let mut ch = SecureChannel::acu(session.scbk, session.key_type);
+                let mut ch =
+                    SecureChannel::acu(session.scbk, session.key_type).with_mac_len(cfg.mac_len);
                 let rnd_a = rng.nonce8();
                 match ch.challenge(address, seq, rnd_a) {
                     Ok(f) => {

@@ -309,6 +309,49 @@ pub fn truncate_mac(mac: &[u8; BLOCK]) -> [u8; 4] {
     [mac[0], mac[1], mac[2], mac[3]]
 }
 
+/// How many MAC bytes OSDP actually puts on the wire. Four. Always.
+pub const WIRE_MAC_LEN: usize = 4;
+
+/// The shortest MAC width the teaching knob below will accept.
+pub const MIN_TEACHING_MAC_LEN: u8 = 1;
+
+/// **A teaching device, and nothing the protocol permits.**
+///
+/// [`truncate_mac`] is the real thing: OSDP sends the first four bytes of the
+/// sixteen-byte MAC, and there is no negotiation, no setting and no vendor
+/// option that makes it anything else. A blind forgery therefore succeeds about
+/// one time in four billion, which is slow rather than impossible — and slow
+/// enough that a browser cannot show a learner the attack completing.
+///
+/// This function exists so a drill can shorten the *effective* MAC to something
+/// a learner can watch finish (curriculum 4.2). It keeps the first `len` bytes
+/// of the MAC and **zeroes the rest**, so:
+///
+/// * the frame layout is unchanged — four MAC bytes on the wire, every parser
+///   and every capture unaffected;
+/// * only `len` bytes carry any strength, so the forgery space is
+///   `2^(8·len)`;
+/// * the trailing zeros are *visible on the wire*, which matters: an attacker
+///   calibrates the width it is up against by looking at genuine frames rather
+///   than by being told, and a learner can see at a glance that the bus has
+///   been rigged.
+///
+/// `len` is clamped to `1..=4`. At the default of 4 this is exactly
+/// [`truncate_mac`], byte for byte.
+///
+/// ```
+/// use odr_osdp::crypto::{truncate_mac, truncate_mac_to};
+/// let full = [0xAAu8; 16];
+/// assert_eq!(truncate_mac_to(&full, 4), truncate_mac(&full));
+/// assert_eq!(truncate_mac_to(&full, 1), [0xAA, 0x00, 0x00, 0x00]);
+/// ```
+pub fn truncate_mac_to(mac: &[u8; BLOCK], len: u8) -> [u8; WIRE_MAC_LEN] {
+    let keep = len.clamp(MIN_TEACHING_MAC_LEN, WIRE_MAC_LEN as u8) as usize;
+    let mut out = [0u8; WIRE_MAC_LEN];
+    out[..keep].copy_from_slice(&mac[..keep]);
+    out
+}
+
 /// Derive the payload-encryption IV from a MAC, by bitwise complement.
 ///
 /// OSDP does not carry an IV in the frame. Instead, the IV for encrypting a

@@ -126,6 +126,19 @@ pub struct PdConfig {
     pub busy_policy: BusyPolicy,
     /// Which reader number card reads are reported against.
     pub reader_number: u8,
+    /// **How many MAC bytes carry strength. Four, unless a drill rigs it.**
+    ///
+    /// OSDP sends four and offers no way to change that, so `4` is the only
+    /// honest value and it is the default. Curriculum drill 4.2 sets it to 1 or
+    /// 2 so a forgery completes while a learner is watching; see
+    /// [`odr_osdp::SecureChannel::set_mac_len`] for what that does and does not
+    /// claim. Four bytes still go on the wire either way — the ones beyond this
+    /// count are zero, which is deliberately visible to anyone reading the bus.
+    ///
+    /// The [`AcuConfig`](crate::AcuConfig) at the other end must be set to
+    /// match, or the handshake completes and every session frame then fails its
+    /// MAC check.
+    pub mac_len: u8,
 }
 
 impl Default for PdConfig {
@@ -152,6 +165,7 @@ impl Default for PdConfig {
             reply_delay_us: 2_000,
             busy_policy: BusyPolicy::Never,
             reader_number: 0,
+            mac_len: 4,
         }
     }
 }
@@ -193,6 +207,12 @@ impl PdConfig {
     /// Set the busy policy.
     pub fn with_busy(mut self, policy: BusyPolicy) -> PdConfig {
         self.busy_policy = policy;
+        self
+    }
+
+    /// Rig the MAC width for curriculum drill 4.2. See [`PdConfig::mac_len`].
+    pub fn with_mac_len(mut self, len: u8) -> PdConfig {
+        self.mac_len = len.clamp(1, 4);
         self
     }
 
@@ -639,7 +659,8 @@ impl Reader {
                         Nak::new(NakError::SecureChannelUnsupported).encode(),
                     ));
                 }
-                let mut ch = SecureChannel::pd(cfg.scbk, cfg.key_type, cfg.cuid);
+                let mut ch =
+                    SecureChannel::pd(cfg.scbk, cfg.key_type, cfg.cuid).with_mac_len(cfg.mac_len);
                 let rnd_b = rng.nonce8();
                 match ch.handle_challenge(frame, rnd_b) {
                     Ok(reply) => {

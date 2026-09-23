@@ -1088,6 +1088,57 @@ fn drill_4_4_the_null_cipher_authenticates_without_hiding_the_card_number() {
     let _ = pd;
 }
 
+#[test]
+fn a_rigged_mac_length_is_visible_on_the_wire_and_changes_nothing_else() {
+    // The knob curriculum drill 4.2 needs. Four MAC bytes still cross the bus;
+    // only the first carries strength, and the trailing zeros are there for
+    // anyone reading the line to see.
+    let cred = card(42, 1337);
+    let access = AccessList::new().with_credential(&cred).unwrap();
+    let mut bench = osdp_bench(
+        28,
+        osdp_spec(
+            AcuConfig::polling([0x01])
+                .with_default_key(ScRequirement::IfAvailable)
+                .with_mac_len(1),
+            alloc::vec![PdConfig::at(0x01)
+                .with_default_key(ScRequirement::IfAvailable)
+                .with_mac_len(1)],
+            access,
+        ),
+    )
+    .unwrap();
+    let pd = bench.pd();
+    bench.world.run_until(2_000_000).unwrap();
+    assert!(
+        bench
+            .world
+            .controller(bench.controller)
+            .unwrap()
+            .is_secure(1),
+        "the handshake still completes"
+    );
+
+    bench
+        .world
+        .present(pd, 2_000_000, presentation(0, &cred))
+        .unwrap();
+    bench.world.run_until(4_000_000).unwrap();
+    assert_eq!(bench.world.log().strikes().count(), 1);
+
+    let macs: Vec<[u8; 4]> = bench
+        .world
+        .log()
+        .bus_frames()
+        .filter_map(|(_, _, f)| f.mac)
+        .collect();
+    assert!(macs.len() > 3);
+    assert!(
+        macs.iter().all(|m| m[1..] == [0, 0, 0]),
+        "only one byte of every MAC is doing any work"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Taps
 // ---------------------------------------------------------------------------
