@@ -34,8 +34,8 @@ impl Parity {
     /// The parity bit value given how many of the covered bits are ones.
     pub fn bit_for(self, ones: usize) -> bool {
         match self {
-            Parity::Even => ones % 2 == 1,
-            Parity::Odd => ones % 2 == 0,
+            Parity::Even => !ones.is_multiple_of(2),
+            Parity::Odd => ones.is_multiple_of(2),
         }
     }
 
@@ -89,8 +89,15 @@ impl Coverage {
     /// This exists for Corporate 1000, whose inner parity bits cover "two out
     /// of every three" positions. Spelling that out as a literal list of
     /// twenty-two numbers twice would be unreadable and easy to mistype.
-    pub fn comb(start: usize, end_inclusive: usize, modulus: usize, skip_residue: usize) -> Coverage {
-        let idx = (start..=end_inclusive).filter(|p| p % modulus != skip_residue).collect();
+    pub fn comb(
+        start: usize,
+        end_inclusive: usize,
+        modulus: usize,
+        skip_residue: usize,
+    ) -> Coverage {
+        let idx = (start..=end_inclusive)
+            .filter(|p| p % modulus != skip_residue)
+            .collect();
         Coverage::Indices(idx)
     }
 }
@@ -213,7 +220,9 @@ pub struct ParityReport {
 impl ParityReport {
     /// Build a report by running every rule against `bits`.
     pub fn evaluate(rules: &[ParityRule], bits: &BitVec) -> ParityReport {
-        ParityReport { checks: rules.iter().map(|r| r.check(bits)).collect() }
+        ParityReport {
+            checks: rules.iter().map(|r| r.check(bits)).collect(),
+        }
     }
 
     /// True when every rule passed.
@@ -250,12 +259,12 @@ impl ParityReport {
 ///
 /// Returns the bit that would make the total number of ones even.
 pub fn even_parity_bit(value: u64) -> bool {
-    value.count_ones() % 2 == 1
+    !value.count_ones().is_multiple_of(2)
 }
 
 /// Odd parity over an arbitrary value.
 pub fn odd_parity_bit(value: u64) -> bool {
-    value.count_ones() % 2 == 0
+    value.count_ones().is_multiple_of(2)
 }
 
 #[cfg(test)]

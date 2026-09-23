@@ -63,14 +63,21 @@ impl fmt::Display for BitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BitError::BadBinaryChar { ch, at } => {
-                write!(f, "unexpected character {ch:?} at offset {at} in binary literal")
+                write!(
+                    f,
+                    "unexpected character {ch:?} at offset {at} in binary literal"
+                )
             }
             BitError::TooWide { len } => write!(f, "{len} bits will not fit in a u64"),
             BitError::ValueTooLarge { value, len } => {
                 write!(f, "value {value} does not fit in {len} bits")
             }
             BitError::OutOfRange { start, len, have } => {
-                write!(f, "bits {start}..{} requested but only {have} present", start + len)
+                write!(
+                    f,
+                    "bits {start}..{} requested but only {have} present",
+                    start + len
+                )
             }
         }
     }
@@ -92,17 +99,23 @@ impl BitVec {
 
     /// An empty bit vector with room for `n` bits.
     pub fn with_capacity(n: usize) -> Self {
-        BitVec { bits: Vec::with_capacity(n) }
+        BitVec {
+            bits: Vec::with_capacity(n),
+        }
     }
 
     /// `n` zero bits. Useful as a canvas before fields and parity are written.
     pub fn zeros(n: usize) -> Self {
-        BitVec { bits: alloc::vec![false; n] }
+        BitVec {
+            bits: alloc::vec![false; n],
+        }
     }
 
     /// Build from a slice of booleans, first element transmitted first.
     pub fn from_bools(bits: &[bool]) -> Self {
-        BitVec { bits: bits.to_vec() }
+        BitVec {
+            bits: bits.to_vec(),
+        }
     }
 
     /// Parse a binary literal such as `"1000_0110_0011"`.
@@ -170,7 +183,11 @@ impl BitVec {
                 *slot = value;
                 Ok(())
             }
-            None => Err(BitError::OutOfRange { start: index, len: 1, have: self.bits.len() }),
+            None => Err(BitError::OutOfRange {
+                start: index,
+                len: 1,
+                have: self.bits.len(),
+            }),
         }
     }
 
@@ -222,7 +239,9 @@ impl BitVec {
         if end > self.bits.len() {
             return None;
         }
-        Some(BitVec { bits: self.bits[start..end].to_vec() })
+        Some(BitVec {
+            bits: self.bits[start..end].to_vec(),
+        })
     }
 
     /// Write `value` into `len` bits starting at `start`, MSB first.
@@ -236,7 +255,11 @@ impl BitVec {
             return Err(BitError::TooWide { len });
         }
         if start + len > self.bits.len() {
-            return Err(BitError::OutOfRange { start, len, have: self.bits.len() });
+            return Err(BitError::OutOfRange {
+                start,
+                len,
+                have: self.bits.len(),
+            });
         }
         if len < 64 && value >= (1u64 << len) {
             return Err(BitError::ValueTooLarge { value, len });
@@ -254,7 +277,10 @@ impl BitVec {
 
     /// Render as `0`/`1` characters, first transmitted bit leftmost.
     pub fn to_bin_string(&self) -> String {
-        self.bits.iter().map(|b| if *b { '1' } else { '0' }).collect()
+        self.bits
+            .iter()
+            .map(|b| if *b { '1' } else { '0' })
+            .collect()
     }
 
     /// Render as uppercase hex, left-padded to a whole number of nibbles.
@@ -271,7 +297,11 @@ impl BitVec {
             let bit = if i < pad { false } else { self.bits[i - pad] };
             nibble = (nibble << 1) | u8::from(bit);
             if i % 4 == 3 {
-                out.push(char::from_digit(u32::from(nibble), 16).unwrap_or('?').to_ascii_uppercase());
+                out.push(
+                    char::from_digit(u32::from(nibble), 16)
+                        .unwrap_or('?')
+                        .to_ascii_uppercase(),
+                );
                 nibble = 0;
             }
         }
@@ -303,7 +333,9 @@ impl fmt::Display for BitVec {
 
 impl FromIterator<bool> for BitVec {
     fn from_iter<T: IntoIterator<Item = bool>>(iter: T) -> Self {
-        BitVec { bits: iter.into_iter().collect() }
+        BitVec {
+            bits: iter.into_iter().collect(),
+        }
     }
 }
 

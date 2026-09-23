@@ -4,5 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Wiegand and clock-and-data reader-to-panel protocols: card formats, parity, bit streams and pulse timing"
 
+# Deliberately none. This crate must build for wasm32-unknown-unknown and must
+# not reach for a clock, a thread, or the OS; see DESIGN.md section 3.
 [dependencies]
