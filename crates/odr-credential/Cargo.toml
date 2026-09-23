@@ -4,5 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "The card layer of Open Door Range: 125 kHz EM4100 and HID Prox, 13.56 MHz MIFARE Classic and Crypto1, DESFire EV2 as the working contrast."
 
 [dependencies]
+aes = { workspace = true }

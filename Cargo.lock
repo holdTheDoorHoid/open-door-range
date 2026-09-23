@@ -80,6 +80,10 @@ version = "0.1.0"
 [[package]]
 name = "odr-bus"
 version = "0.1.0"
+dependencies = [
+ "odr-osdp",
+ "odr-wiegand",
+]
 
 [[package]]
 name = "odr-cli"
@@ -88,6 +92,9 @@ version = "0.1.0"
 [[package]]
 name = "odr-credential"
 version = "0.1.0"
+dependencies = [
+ "aes",
+]
 
 [[package]]
 name = "odr-detect"
