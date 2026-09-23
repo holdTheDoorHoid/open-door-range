@@ -55,7 +55,7 @@ pub fn ecb_decrypt_block(key: &[u8; BLOCK], block: &mut [u8; BLOCK]) {
 /// Returns `false` if the length was not a whole number of blocks, in which
 /// case nothing is modified.
 pub fn cbc_encrypt(key: &[u8; BLOCK], iv: &[u8; BLOCK], data: &mut [u8]) -> bool {
-    if data.is_empty() || data.len() % BLOCK != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(BLOCK) {
         return false;
     }
     let cipher = Aes128::new(GenericArray::from_slice(key));
@@ -75,7 +75,7 @@ pub fn cbc_encrypt(key: &[u8; BLOCK], iv: &[u8; BLOCK], data: &mut [u8]) -> bool
 /// Decrypt `data` in place with AES-128-CBC. Same length rule as
 /// [`cbc_encrypt`].
 pub fn cbc_decrypt(key: &[u8; BLOCK], iv: &[u8; BLOCK], data: &mut [u8]) -> bool {
-    if data.is_empty() || data.len() % BLOCK != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(BLOCK) {
         return false;
     }
     let cipher = Aes128::new(GenericArray::from_slice(key));

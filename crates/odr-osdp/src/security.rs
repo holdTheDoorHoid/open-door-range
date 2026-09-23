@@ -40,9 +40,11 @@ pub enum ScsType {
     /// PD → ACU. Carries `REPLY_CCRYPT`. Security block data: one byte, the key
     /// type.
     Ccrypt = 0x12,
-    /// ACU → PD. Carries `CMD_SCRYPT` and the server cryptogram. No extra data.
+    /// ACU → PD. Carries `CMD_SCRYPT` and the server cryptogram. Security block
+    /// data: one byte, the key type, same as SCS_11/SCS_12.
     Scrypt = 0x13,
-    /// PD → ACU. Carries `REPLY_RMAC_I` and the initial R-MAC. No extra data.
+    /// PD → ACU. Carries `REPLY_RMAC_I` and the initial R-MAC. Security block
+    /// data: one byte, `0x01` meaning "I verified the ACU's cryptogram".
     RmacI = 0x14,
     /// ACU → PD. MAC present, payload **not** encrypted.
     CmdMacOnly = 0x15,
@@ -116,13 +118,16 @@ impl ScsType {
     /// The standard total length of this security block, counting the `scb_len`
     /// and `scb_type` bytes themselves.
     ///
-    /// `3` for SCS_11 and SCS_12 (they carry the key-type byte), `2` for every
-    /// other type. A parser should accept other lengths and let the caller
-    /// decide; this is what an encoder emits.
+    /// `3` for all four handshake types — SCS_11, SCS_12 and SCS_13 carry the
+    /// key-type byte, and SCS_14 carries an authentication-result byte — and
+    /// `2` for the four in-session types, which need no extra data. A parser
+    /// should accept other lengths and let the caller decide; this is only what
+    /// an encoder emits.
     pub fn standard_len(self) -> u8 {
-        match self {
-            ScsType::Chlng | ScsType::Ccrypt => 3,
-            _ => 2,
+        if self.is_handshake() {
+            3
+        } else {
+            2
         }
     }
 }
@@ -189,8 +194,8 @@ impl SecurityBlock {
         }
     }
 
-    /// Build an SCS_11 or SCS_12 handshake block announcing which base key is
-    /// in use.
+    /// Build an SCS_11, SCS_12 or SCS_13 handshake block announcing which base
+    /// key is in use.
     pub fn handshake(scs_type: ScsType, key_type: KeyType) -> Self {
         Self {
             scs_type: Some(scs_type),
@@ -199,16 +204,42 @@ impl SecurityBlock {
         }
     }
 
+    /// Build the SCS_14 block the PD sends with `REPLY_RMAC_I`.
+    ///
+    /// The single data byte is `0x01` when the PD successfully verified the
+    /// ACU's server cryptogram. There is no negative form in practice — a PD
+    /// that fails verification NAKs instead of replying RMAC_I.
+    pub fn rmac_i(acu_authenticated: bool) -> Self {
+        Self {
+            scs_type: Some(ScsType::RmacI),
+            raw_type: ScsType::RmacI.to_u8(),
+            data: alloc::vec![u8::from(acu_authenticated)],
+        }
+    }
+
+    /// Build a single-byte security block from a raw type and data byte.
+    pub fn with_byte(scs_type: ScsType, byte: u8) -> Self {
+        Self {
+            scs_type: Some(scs_type),
+            raw_type: scs_type.to_u8(),
+            data: alloc::vec![byte],
+        }
+    }
+
     /// Total encoded length of this block, including the two header bytes.
     pub fn encoded_len(&self) -> usize {
         2 + self.data.len()
     }
 
-    /// The key type announced in an SCS_11/SCS_12 block, if this is one and the
-    /// byte is present and recognised.
+    /// The key type announced in an SCS_11/SCS_12/SCS_13 block, if this is one
+    /// and the byte is present and recognised.
+    ///
+    /// This is the single most useful field in a passive OSDP capture: it tells
+    /// a listener, before a single byte is encrypted, whether the installation
+    /// is still on the published default key.
     pub fn key_type(&self) -> Option<KeyType> {
         match self.scs_type {
-            Some(ScsType::Chlng) | Some(ScsType::Ccrypt) => {
+            Some(ScsType::Chlng) | Some(ScsType::Ccrypt) | Some(ScsType::Scrypt) => {
                 self.data.first().copied().and_then(KeyType::from_u8)
             }
             _ => None,
@@ -300,12 +331,23 @@ mod tests {
     }
 
     #[test]
+    fn rmac_i_block_carries_the_auth_result() {
+        let b = SecurityBlock::rmac_i(true);
+        assert_eq!(b.encode(), alloc::vec![0x03, 0x14, 0x01]);
+        assert_eq!(b.key_type(), None, "SCS_14's byte is not a key type");
+    }
+
+    #[test]
     fn standard_lengths() {
-        assert_eq!(ScsType::Chlng.standard_len(), 3);
-        assert_eq!(ScsType::Ccrypt.standard_len(), 3);
         for t in [
+            ScsType::Chlng,
+            ScsType::Ccrypt,
             ScsType::Scrypt,
             ScsType::RmacI,
+        ] {
+            assert_eq!(t.standard_len(), 3);
+        }
+        for t in [
             ScsType::CmdMacOnly,
             ScsType::ReplyMacOnly,
             ScsType::CmdEncrypted,
