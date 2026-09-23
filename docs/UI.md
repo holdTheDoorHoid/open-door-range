@@ -69,29 +69,36 @@ taps and says which control to touch. Gold gives an objective and nothing else. 
 is identical in all three, so a learner moving up is not learning a new interface, and a
 practitioner in free play has the same instrument as everyone else.
 
-## Tensions I have not resolved
+## Tensions, now resolved
+
+All three were decided by the owner on 2026-09-23. **DECIDED** items do not change
+without asking.
 
 **Realism versus legibility in the timeline.** Real OSDP polls run tens of times a second,
 so an honest timeline of a real bus is a solid bar. Compressing idle polling makes it
 readable and makes it a lie — and the amount of idle traffic is exactly what makes traffic
 analysis work in drill 4.1. Current thinking: show it honestly by default with a
 prominent, non-sticky "collapse idle polling" control, so compression is always a thing
-the learner chose and can see they chose. Wants a decision.
+the learner chose and can see they chose.
+
+**DECIDED: honest by default, collapse on request.** The learner's first sight of a bus is
+the real thing. Compression is available and obvious, and is always a choice they made.
 
 **Whether the door should be animated.** A door that visibly opens is a strong reward
 signal and makes success unmistakable. It is also the thing most likely to make this feel
-like a toy to the practitioner audience. Leaning toward: a clear state change with no
-animation beyond a fast transition, and the strike-fire event on the timeline as the
-authoritative record.
+like a toy to the practitioner audience. **DECIDED: animate it.** The door swings. It is the payoff, it is what people carry out of
+a workshop, and the seriousness of the rest of the instrument can carry the cost. The
+strike-fire event still lands on the timeline as the authoritative record — the animation
+is the reward, the timeline is the evidence.
 
 **How honest to be about attack costs.** Drill 4.2 shortens the MAC so it completes in
 seconds. The drill says so. But a learner who runs it and sees "MAC forged" has
 experienced something that does not happen in the time they just spent, and experience
-overwrites text. Options: refuse to shorten it and let the drill be theoretical; shorten
-it but require the learner to first compute and enter the real cost; or run the real
-computation in the background and show a progress bar that will never finish, which is
-honest and also the most memorable. Leaning toward the third, which is unusual enough to
-want a second opinion.
+overwrites text. **DECIDED: run the real one on a bar that never finishes.** The shortened attack completes
+and the drill proceeds. Alongside it, the genuine computation starts and keeps running,
+with a progress bar that crawls and a projected completion date rendered in full. It will
+still be running when the learner closes the tab. Nobody who sees that forgets what 32
+bits of MAC is actually worth, and no amount of explanatory text achieves the same thing.
 
 ## Accessibility
 
