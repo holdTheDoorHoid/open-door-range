@@ -183,11 +183,7 @@ pub fn derive_session_keys(scbk: &[u8; BLOCK], rnd_a: &[u8; 8]) -> SessionKeys {
 ///
 /// `RND.A || RND.B` is 8 + 8 = exactly one AES block, so a single ECB
 /// encryption is all this is. Sent to the ACU in `REPLY_CCRYPT`.
-pub fn client_cryptogram(
-    s_enc: &[u8; BLOCK],
-    rnd_a: &[u8; 8],
-    rnd_b: &[u8; 8],
-) -> [u8; BLOCK] {
+pub fn client_cryptogram(s_enc: &[u8; BLOCK], rnd_a: &[u8; 8], rnd_b: &[u8; 8]) -> [u8; BLOCK] {
     let mut block = [0u8; BLOCK];
     block[..8].copy_from_slice(rnd_a);
     block[8..].copy_from_slice(rnd_b);
@@ -199,11 +195,7 @@ pub fn client_cryptogram(
 ///
 /// Same construction as [`client_cryptogram`] with the two nonces swapped, so
 /// the two sides cannot replay each other's value. Sent in `CMD_SCRYPT`.
-pub fn server_cryptogram(
-    s_enc: &[u8; BLOCK],
-    rnd_a: &[u8; 8],
-    rnd_b: &[u8; 8],
-) -> [u8; BLOCK] {
+pub fn server_cryptogram(s_enc: &[u8; BLOCK], rnd_a: &[u8; 8], rnd_b: &[u8; 8]) -> [u8; BLOCK] {
     let mut block = [0u8; BLOCK];
     block[..8].copy_from_slice(rnd_b);
     block[8..].copy_from_slice(rnd_a);
@@ -433,7 +425,10 @@ mod tests {
         let k = derive_session_keys(&SCBK_D, &[1; 8]);
         let a = [1u8; 8];
         let b = [2u8; 8];
-        assert_ne!(client_cryptogram(&k.s_enc, &a, &b), server_cryptogram(&k.s_enc, &a, &b));
+        assert_ne!(
+            client_cryptogram(&k.s_enc, &a, &b),
+            server_cryptogram(&k.s_enc, &a, &b)
+        );
     }
 
     #[test]
@@ -443,7 +438,11 @@ mod tests {
         assert_eq!(strip_padding(&pad_for_encryption(b"abc")), b"abc");
 
         let exact = [0x41u8; 16];
-        assert_eq!(pad_for_encryption(&exact).len(), 16, "full blocks are not padded");
+        assert_eq!(
+            pad_for_encryption(&exact).len(),
+            16,
+            "full blocks are not padded"
+        );
         assert_eq!(strip_padding(&exact), &exact);
     }
 

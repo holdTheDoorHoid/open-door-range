@@ -450,7 +450,10 @@ impl Reply {
     /// The traffic-analysis primitive: seeing one of these on an encrypted bus,
     /// without any key, tells you a person is at that door right now.
     pub fn is_credential_event(self) -> bool {
-        matches!(self, Reply::Raw | Reply::Fmt | Reply::Keypad | Reply::BioReadR)
+        matches!(
+            self,
+            Reply::Raw | Reply::Fmt | Reply::Keypad | Reply::BioReadR
+        )
     }
 }
 

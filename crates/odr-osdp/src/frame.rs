@@ -143,10 +143,16 @@ impl fmt::Display for ParseError {
                 write!(f, "frame length leaves no room for the id byte or MAC")
             }
             ParseError::BadCrc { expected, found } => {
-                write!(f, "CRC mismatch: expected 0x{expected:04x}, found 0x{found:04x}")
+                write!(
+                    f,
+                    "CRC mismatch: expected 0x{expected:04x}, found 0x{found:04x}"
+                )
             }
             ParseError::BadChecksum { expected, found } => {
-                write!(f, "checksum mismatch: expected 0x{expected:02x}, found 0x{found:02x}")
+                write!(
+                    f,
+                    "checksum mismatch: expected 0x{expected:02x}, found 0x{found:02x}"
+                )
             }
         }
     }
@@ -882,7 +888,10 @@ mod tests {
         let mut bytes = Frame::command(1, 0, Command::Poll, vec![]).encode();
         bytes[2] = 0xFF;
         bytes[3] = 0xFF;
-        assert!(matches!(Frame::parse(&bytes), Err(ParseError::BadLength { .. })));
+        assert!(matches!(
+            Frame::parse(&bytes),
+            Err(ParseError::BadLength { .. })
+        ));
     }
 
     #[test]
@@ -936,7 +945,10 @@ mod tests {
         let c = crc16(&bytes);
         bytes.push((c & 0xFF) as u8);
         bytes.push((c >> 8) as u8);
-        assert!(matches!(Frame::parse(&bytes), Err(ParseError::NoRoomForBody)));
+        assert!(matches!(
+            Frame::parse(&bytes),
+            Err(ParseError::NoRoomForBody)
+        ));
     }
 
     #[test]
@@ -982,7 +994,10 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].command_code(), Some(Command::Poll));
         assert_eq!(frames[1].reply_code(), Some(Reply::Ack));
-        assert!(matches!(events[0], ScanEvent::Garbage { offset: 0, len: 3 }));
+        assert!(matches!(
+            events[0],
+            ScanEvent::Garbage { offset: 0, len: 3 }
+        ));
     }
 
     #[test]
@@ -1039,10 +1054,7 @@ mod tests {
 
         let mut scanner = Scanner::new(&stream);
         let events: Vec<ScanEvent> = scanner.by_ref().collect();
-        assert!(matches!(
-            events.last(),
-            Some(ScanEvent::Incomplete { .. })
-        ));
+        assert!(matches!(events.last(), Some(ScanEvent::Incomplete { .. })));
         // Feeding the retained tail plus the rest recovers the frame.
         let mut retry = scanner.remaining().to_vec();
         retry.extend_from_slice(&whole[cut..]);
@@ -1055,7 +1067,10 @@ mod tests {
         let stream = [0x00u8; 32];
         let events: Vec<ScanEvent> = Scanner::new(&stream).collect();
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], ScanEvent::Garbage { offset: 0, len: 32 }));
+        assert!(matches!(
+            events[0],
+            ScanEvent::Garbage { offset: 0, len: 32 }
+        ));
     }
 
     #[test]
@@ -1081,7 +1096,12 @@ mod tests {
 
     #[test]
     fn broadcast_address_is_recognised() {
-        let f = Frame::command(CONFIGURATION_ADDRESS, 0, Command::Comset, vec![1, 0, 0, 0, 0]);
+        let f = Frame::command(
+            CONFIGURATION_ADDRESS,
+            0,
+            Command::Comset,
+            vec![1, 0, 0, 0, 0],
+        );
         assert!(f.is_broadcast());
         assert!(!Frame::command(0x01, 0, Command::Poll, vec![]).is_broadcast());
     }

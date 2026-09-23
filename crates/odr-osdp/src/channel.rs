@@ -178,7 +178,10 @@ impl fmt::Display for ChannelError {
             }
             ChannelError::Payload(e) => write!(f, "payload: {e}"),
             ChannelError::CryptogramMismatch => {
-                write!(f, "cryptogram did not verify: the peer holds a different SCBK")
+                write!(
+                    f,
+                    "cryptogram did not verify: the peer holds a different SCBK"
+                )
             }
             ChannelError::MissingMac => write!(f, "session frame carried no MAC"),
             ChannelError::MacMismatch { got, expected } => write!(
@@ -186,7 +189,10 @@ impl fmt::Display for ChannelError {
                 "MAC mismatch: frame carried {got:02x?}, computed {expected:02x?}"
             ),
             ChannelError::NotBlockAligned { len } => {
-                write!(f, "encrypted payload of {len} bytes is not a multiple of 16")
+                write!(
+                    f,
+                    "encrypted payload of {len} bytes is not a multiple of 16"
+                )
             }
             ChannelError::WrongDirection => write!(f, "frame travelling the wrong way"),
         }
@@ -889,7 +895,11 @@ mod tests {
             .seal(1, 1, Command::Out.to_u8(), &[0x00, 0x01, 0x32, 0x00], true)
             .unwrap();
         assert_eq!(cmd.scs_type(), Some(ScsType::CmdEncrypted));
-        assert_ne!(cmd.payload, vec![0x00, 0x01, 0x32, 0x00], "it is ciphertext");
+        assert_ne!(
+            cmd.payload,
+            vec![0x00, 0x01, 0x32, 0x00],
+            "it is ciphertext"
+        );
         assert_eq!(cmd.payload.len() % 16, 0);
         let (cmd, _) = Frame::parse(&cmd.encode()).unwrap();
         assert_eq!(pd.open(&cmd).unwrap(), vec![0x00, 0x01, 0x32, 0x00]);
@@ -931,9 +941,7 @@ mod tests {
     fn null_cipher_mode_leaves_the_payload_readable() {
         let (mut acu, mut pd) = handshake(SCBK_D);
         let card = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let cmd = acu
-            .seal(1, 1, Command::Text.to_u8(), &card, false)
-            .unwrap();
+        let cmd = acu.seal(1, 1, Command::Text.to_u8(), &card, false).unwrap();
         assert_eq!(cmd.scs_type(), Some(ScsType::CmdMacOnly));
         assert_eq!(
             cmd.payload, card,
@@ -1310,10 +1318,14 @@ mod tests {
             let (mut acu, mut pd) = handshake(SCBK_D);
             let mut out = Vec::new();
             for i in 0..8u8 {
-                let c = acu.seal(1, i % 4, Command::Mfg.to_u8(), &[i; 5], true).unwrap();
+                let c = acu
+                    .seal(1, i % 4, Command::Mfg.to_u8(), &[i; 5], true)
+                    .unwrap();
                 out.extend(c.encode());
                 pd.open(&c).unwrap();
-                let r = pd.seal(1, i % 4, Reply::MfgRep.to_u8(), &[i; 3], true).unwrap();
+                let r = pd
+                    .seal(1, i % 4, Reply::MfgRep.to_u8(), &[i; 3], true)
+                    .unwrap();
                 out.extend(r.encode());
                 acu.open(&r).unwrap();
             }

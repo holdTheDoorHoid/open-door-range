@@ -131,7 +131,12 @@ fn quiet_bus_transcript() -> (Vec<u8>, usize) {
         ),
         Frame::reply(1, 3, Reply::Ack, vec![]),
         Frame::command(1, 0, Command::Poll, vec![]),
-        Frame::reply(1, 0, Reply::Nak, Nak::new(NakError::SequenceNumber).encode()),
+        Frame::reply(
+            1,
+            0,
+            Reply::Nak,
+            Nak::new(NakError::SequenceNumber).encode(),
+        ),
     ];
     for f in &frames {
         wire.extend(f.encode());
@@ -260,7 +265,11 @@ fn downgrade_attack_rewrites_a_real_frame() {
         !seen.claims_aes128(),
         "the controller now believes the reader cannot do crypto"
     );
-    assert_eq!(seen.entries.len(), 2, "the other capabilities are untouched");
+    assert_eq!(
+        seen.entries.len(),
+        2,
+        "the other capabilities are untouched"
+    );
 }
 
 /// Mellon attack 5: the site key crossing the bus during commissioning, and a
@@ -323,10 +332,22 @@ fn traffic_analysis_works_on_a_fully_encrypted_session() {
     let mut wire = Vec::new();
     // Two idle poll cycles, then a badge-in.
     for seq in [1u8, 2] {
-        wire.extend(acu.seal(1, seq, Command::Poll.to_u8(), &[], true).unwrap().encode());
-        wire.extend(pd.seal(1, seq, Reply::Ack.to_u8(), &[], true).unwrap().encode());
+        wire.extend(
+            acu.seal(1, seq, Command::Poll.to_u8(), &[], true)
+                .unwrap()
+                .encode(),
+        );
+        wire.extend(
+            pd.seal(1, seq, Reply::Ack.to_u8(), &[], true)
+                .unwrap()
+                .encode(),
+        );
     }
-    wire.extend(acu.seal(1, 3, Command::Poll.to_u8(), &[], true).unwrap().encode());
+    wire.extend(
+        acu.seal(1, 3, Command::Poll.to_u8(), &[], true)
+            .unwrap()
+            .encode(),
+    );
     wire.extend(
         pd.seal(1, 3, Reply::Raw.to_u8(), &card.encode(), true)
             .unwrap()
@@ -337,7 +358,11 @@ fn traffic_analysis_works_on_a_fully_encrypted_session() {
             .unwrap()
             .encode(),
     );
-    wire.extend(pd.seal(1, 0, Reply::Ack.to_u8(), &[], true).unwrap().encode());
+    wire.extend(
+        pd.seal(1, 0, Reply::Ack.to_u8(), &[], true)
+            .unwrap()
+            .encode(),
+    );
 
     // The observer parses. It has no keys.
     let observed: Vec<Frame> = Scanner::new(&wire)
@@ -411,9 +436,7 @@ fn a_weak_key_turns_a_passive_capture_into_full_plaintext() {
     acu.handle_rmac_i(&rmac).unwrap();
 
     let secret = b"facility 42 card 1337";
-    let cmd = acu
-        .seal(1, 1, Command::Mfg.to_u8(), secret, true)
-        .unwrap();
+    let cmd = acu.seal(1, 1, Command::Mfg.to_u8(), secret, true).unwrap();
     wire.extend(cmd.encode());
 
     // ---- attacker, holding only `wire` ----
@@ -440,7 +463,10 @@ fn a_weak_key_turns_a_passive_capture_into_full_plaintext() {
         recover_weak_scbk(&sniffed_rnd_a, &body.rnd_b, &body.client_cryptogram)
             .expect("the key is in the published family");
     assert_eq!(cracked, weak_key);
-    assert_eq!(pattern, crate::weak_keys::WeakKeyPattern::Repeated { byte: 0x41 });
+    assert_eq!(
+        pattern,
+        crate::weak_keys::WeakKeyPattern::Repeated { byte: 0x41 }
+    );
 
     // With the key, the attacker replays the handshake as a PD to reach the
     // same session state, then opens the traffic.

@@ -1302,7 +1302,10 @@ mod tests {
         assert_eq!(id.serial_u32(), 0xEFBE_ADDE);
         assert!(matches!(
             PdId::decode(&bytes[..11]),
-            Err(PayloadError::TooShort { expected: 12, actual: 11 })
+            Err(PayloadError::TooShort {
+                expected: 12,
+                actual: 11
+            })
         ));
     }
 

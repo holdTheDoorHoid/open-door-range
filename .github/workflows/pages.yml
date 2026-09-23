@@ -1,8 +1,8 @@
 name: Deploy to Pages
 
+# Runs on demand until odr-wasm exists. Once the engine has a wasm-bindgen
+# surface, restore the push trigger so main deploys automatically.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
