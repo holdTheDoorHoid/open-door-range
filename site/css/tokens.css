@@ -1,0 +1,167 @@
+/*
+ * tokens.css — the whole palette, in one place.
+ *
+ * Rule: every token gets its value on bare :root first. The dark block only
+ * ever REDEFINES tokens that already exist. Nothing may be defined for the
+ * first time inside a media query, or the light theme silently loses it.
+ *
+ * Sizes are set for a projector at the back of a workshop room. When in doubt,
+ * bigger.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- surfaces ---- */
+  --bg:            #f4f4f1;
+  --bg-sunken:     #e8e8e3;
+  --surface:       #ffffff;
+  --surface-2:     #f8f8f6;
+  --surface-3:     #eeeeea;
+  --border:        #c9c9c2;
+  --border-strong: #9a9a92;
+  --shadow:        0 1px 2px rgba(20, 20, 16, 0.10), 0 4px 14px rgba(20, 20, 16, 0.06);
+
+  /* ---- text ---- */
+  --text:          #17171a;
+  --text-muted:    #55555c;
+  --text-faint:    #7a7a82;
+  --text-invert:   #ffffff;
+
+  /* ---- accents. Never the only carrier of meaning. ---- */
+  --accent:        #1c5fa8;
+  --accent-soft:   #dce9f7;
+  --accent-text:   #12447a;
+
+  --grant:         #1c6b3a;
+  --grant-soft:    #d8ecdf;
+  --deny:          #a32626;
+  --deny-soft:     #f6dede;
+  --attack:        #8a3d00;
+  --attack-soft:   #fae3d0;
+  --warn:          #8a6a00;
+  --warn-soft:     #f8eec8;
+  --sealed:        #4a3d7a;
+  --sealed-soft:   #e6e1f5;
+
+  /* ---- lanes ---- */
+  --lane-rf:       #7a4fae;
+  --lane-wire:     #1c5fa8;
+  --lane-bus:      #14706b;
+  --lane-door:     #8a6a00;
+
+  /* ---- focus ---- */
+  --focus:         #0b63ce;
+  --focus-ring:    0 0 0 3px var(--bg), 0 0 0 6px var(--focus);
+
+  /* ---- type ---- */
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+             "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+               "DejaVu Sans Mono", "Liberation Mono", monospace;
+
+  --fs-xs:   0.8125rem;
+  --fs-sm:   0.9063rem;
+  --fs-base: 1rem;
+  --fs-md:   1.125rem;
+  --fs-lg:   1.375rem;
+  --fs-xl:   1.75rem;
+
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+
+  --radius: 6px;
+  --radius-lg: 10px;
+
+  --dur-door: 900ms;
+  --dur-ui: 140ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:            #15161a;
+    --bg-sunken:     #0e0f12;
+    --surface:       #1d1f24;
+    --surface-2:     #23252b;
+    --surface-3:     #2b2e35;
+    --border:        #3b3e47;
+    --border-strong: #5d616d;
+    --shadow:        0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.35);
+
+    --text:          #eceef2;
+    --text-muted:    #b0b4bf;
+    --text-faint:    #868b97;
+    --text-invert:   #15161a;
+
+    --accent:        #6aa9e9;
+    --accent-soft:   #16304b;
+    --accent-text:   #a9cef5;
+
+    --grant:         #57c07f;
+    --grant-soft:    #13331f;
+    --deny:          #f07272;
+    --deny-soft:     #3a1717;
+    --attack:        #e79452;
+    --attack-soft:   #3a2210;
+    --warn:          #e0bd4a;
+    --warn-soft:     #352c0c;
+    --sealed:        #a99ae8;
+    --sealed-soft:   #241f3d;
+
+    --lane-rf:       #b393e0;
+    --lane-wire:     #6aa9e9;
+    --lane-bus:      #4fc0b8;
+    --lane-door:     #e0bd4a;
+
+    --focus:         #7fb8ff;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:            #15161a;
+  --bg-sunken:     #0e0f12;
+  --surface:       #1d1f24;
+  --surface-2:     #23252b;
+  --surface-3:     #2b2e35;
+  --border:        #3b3e47;
+  --border-strong: #5d616d;
+  --shadow:        0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 16px rgba(0, 0, 0, 0.35);
+
+  --text:          #eceef2;
+  --text-muted:    #b0b4bf;
+  --text-faint:    #868b97;
+  --text-invert:   #15161a;
+
+  --accent:        #6aa9e9;
+  --accent-soft:   #16304b;
+  --accent-text:   #a9cef5;
+
+  --grant:         #57c07f;
+  --grant-soft:    #13331f;
+  --deny:          #f07272;
+  --deny-soft:     #3a1717;
+  --attack:        #e79452;
+  --attack-soft:   #3a2210;
+  --warn:          #e0bd4a;
+  --warn-soft:     #352c0c;
+  --sealed:        #a99ae8;
+  --sealed-soft:   #241f3d;
+
+  --lane-rf:       #b393e0;
+  --lane-wire:     #6aa9e9;
+  --lane-bus:      #4fc0b8;
+  --lane-door:     #e0bd4a;
+
+  --focus:         #7fb8ff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-door: 0ms;
+    --dur-ui: 0ms;
+  }
+}

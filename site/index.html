@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Door Range</title>
+<meta name="description" content="A browser-based virtual range for physical access control. Nothing leaves your browser.">
+<!-- No CDNs, no fonts, no analytics. Everything below is served from this directory. -->
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%231c5fa8'/><rect x='3' y='2' width='8' height='12' fill='%23fff'/><circle cx='9.4' cy='8' r='0.9' fill='%231c5fa8'/></svg>">
+</head>
+<body>
+<a class="skip-link" href="#traffic-panel">Skip to the traffic list</a>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="topbar__brand">
+      <h1>Open Door Range</h1>
+      <span class="tag">virtual range · nothing leaves this browser</span>
+    </div>
+    <div class="topbar__spacer"></div>
+    <p class="topbar__session" id="session-line">Loading the bench…</p>
+    <button class="btn" id="btn-course" aria-haspopup="dialog">Course <span id="course-progress" class="chip__k"></span></button>
+    <button class="btn" id="btn-config" aria-haspopup="dialog">Bench configuration</button>
+    <button class="btn" id="btn-theme" title="Switch colour scheme">Theme</button>
+  </header>
+
+  <!-- Nothing that changes the simulation is ever invisible. This strip is the
+       always-on summary of every configuration group, folded or not. -->
+  <div class="benchstate" id="benchstate" aria-label="Bench state">
+    <span class="benchstate__label">Bench</span>
+  </div>
+
+  <section class="topology" aria-labelledby="topology-h">
+    <div class="topology__hd">
+      <h2 id="topology-h">Topology</h2>
+      <span class="topology__hint">Click a node to configure it. Click a link to place or change a tap. Arrow keys move, <kbd>Enter</kbd> opens.</span>
+    </div>
+    <div id="topology-host"></div>
+  </section>
+
+  <section class="timeline" aria-labelledby="timeline-h">
+    <h2 id="timeline-h" class="visually-hidden">Timeline</h2>
+    <div class="timeline__bar">
+      <span class="timeline__clock" id="clock" aria-live="off">t = 0.000000 s</span>
+      <div class="seg" role="group" aria-label="Transport">
+        <button class="btn" id="btn-start" title="Back to the start (Home)">⏮ Start</button>
+        <button class="btn" id="btn-stepback" title="Previous frame (Left arrow)">◀ Step</button>
+        <button class="btn" id="btn-run" title="Run or pause (Space)">▶ Run</button>
+        <button class="btn" id="btn-stepfwd" title="Next frame (Right arrow)">Step ▶</button>
+        <button class="btn" id="btn-end" title="Run to the end (End)">End ⏭</button>
+      </div>
+      <label class="btn" for="speed" style="cursor:default">Speed
+        <select id="speed">
+          <option value="0.1">0.1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="1" selected>1×</option>
+          <option value="4">4×</option>
+          <option value="20">20×</option>
+        </select>
+      </label>
+      <div class="timeline__spacer"></div>
+      <button class="collapse-ctl" id="btn-collapse" aria-pressed="false">
+        Collapse idle polling
+        <span class="collapse-ctl__state" id="collapse-state">off — showing every frame</span>
+      </button>
+    </div>
+
+    <div class="lanes" id="lanes"></div>
+    <div class="lanes" style="margin-top:4px">
+      <span class="lane__label" id="scrub-label">Scrub</span>
+      <div class="scrubwrap">
+        <input class="scrub" type="range" id="scrub" min="0" max="1000" value="0" step="1"
+               aria-labelledby="scrub-label" aria-valuetext="0 seconds">
+        <div class="markers" id="markers"></div>
+      </div>
+    </div>
+    <p class="honesty-note honesty-note--honest" id="honesty-note">
+      Honest density: every frame the bus carried is drawn. A real OSDP link polls tens of
+      times a second and looks like this. That density is the finding in drill 4.1.
+    </p>
+  </section>
+
+  <div class="bench">
+    <section class="panel" id="traffic-panel" aria-labelledby="traffic-h">
+      <div class="panel__hd">
+        <h2 id="traffic-h">Traffic</h2>
+        <label class="visually-hidden" for="traffic-filter">Filter frames</label>
+        <input type="text" id="traffic-filter" placeholder="filter (poll, raw, chlng…)" style="max-width:16ch">
+        <span class="count" id="traffic-count"></span>
+      </div>
+      <div class="panel__body">
+        <table class="traffic" role="grid" aria-label="Captured frames, newest last">
+          <thead role="rowgroup">
+            <tr role="row"><th scope="col">t (s)</th><th scope="col">Line</th><th scope="col">Dir</th><th scope="col">Frame</th><th scope="col">Detail</th></tr>
+          </thead>
+          <tbody id="traffic-rows" role="rowgroup"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel inspector" id="inspector-panel" aria-labelledby="inspector-h">
+      <div class="panel__hd">
+        <h2 id="inspector-h">Inspector</h2>
+        <span class="count" id="inspector-count"></span>
+      </div>
+      <div class="panel__body" id="inspector-host">
+        <p class="inspector__empty">Select a frame in the traffic list. Its bytes appear on the
+        left and its decode tree on the right; selecting a field highlights the bytes it
+        names. Every value here is selectable text.</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="drill" aria-labelledby="drill-h">
+    <div>
+      <div class="drill__hd">
+        <span class="drill__id" id="drill-id"></span>
+        <h2 id="drill-h">Drill</h2>
+        <span class="band" id="drill-band"></span>
+        <div class="seg" role="group" aria-label="Difficulty band — changes the guidance, never the bench">
+          <button class="btn" data-band="bronze">Bronze</button>
+          <button class="btn" data-band="silver">Silver</button>
+          <button class="btn" data-band="gold">Gold</button>
+        </div>
+      </div>
+      <p class="drill__summary" id="drill-summary"></p>
+      <p class="drill__objective"><strong>Objective</strong><span id="drill-objective"></span></p>
+      <div id="drill-guidance"></div>
+      <div class="hintbox" id="drill-hints"></div>
+      <p style="font-size:var(--fs-xs);color:var(--text-faint);max-width:78ch">
+        Bronze, Silver and Gold change the guidance above. The bench below and above is
+        identical in all three.
+      </p>
+    </div>
+    <div>
+      <div class="flagcard" id="flagcard"></div>
+      <div id="tasks"></div>
+    </div>
+  </section>
+
+</div>
+
+<!-- Course drawer -->
+<div class="drawer drawer--left" id="course-drawer" role="dialog" aria-modal="true" aria-labelledby="course-h" hidden>
+  <button class="drawer__scrim" tabindex="-1" aria-label="Close course"></button>
+  <div class="drawer__panel">
+    <div class="drawer__hd">
+      <h2 id="course-h">Course</h2>
+      <span class="chip__k" id="course-summary"></span>
+      <div class="topbar__spacer"></div>
+      <button class="btn" id="btn-sandbox">Free play</button>
+      <button class="btn btn--ghost" data-close-drawer aria-label="Close">✕</button>
+    </div>
+    <div class="drawer__body" id="course-body"></div>
+  </div>
+</div>
+
+<!-- Configuration drawer -->
+<div class="drawer drawer--right" id="config-drawer" role="dialog" aria-modal="true" aria-labelledby="config-h" hidden>
+  <button class="drawer__scrim" tabindex="-1" aria-label="Close configuration"></button>
+  <div class="drawer__panel">
+    <div class="drawer__hd">
+      <h2 id="config-h">Bench configuration</h2>
+      <div class="topbar__spacer"></div>
+      <button class="btn btn--ghost" data-close-drawer aria-label="Close">✕</button>
+    </div>
+    <div class="drawer__body">
+      <p style="font-size:var(--fs-sm);color:var(--text-muted);max-width:60ch">
+        Panels collapse; they never disappear. A folded panel still states the thing that
+        matters on its summary line, because a learner who cannot see that Secure Channel is
+        on has been misled by the interface rather than taught by it.
+      </p>
+      <div id="config-body"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+<noscript>
+  <p style="padding:2rem;max-width:60ch">Open Door Range is a simulator and needs JavaScript.
+  It still makes no network requests: everything runs in this tab.</p>
+</noscript>
+</body>
+</html>
