@@ -168,8 +168,18 @@ session key. (Engine runs this with a shortened MAC length so it completes in se
 drill states the real cost plainly and does not pretend otherwise.)
 
 **4.3 IV reuse** · Gold
-IVs derive from the previous MAC. Find the collision, recover plaintext.
-*Flag:* attacker recovers a plaintext payload from two frames sharing an IV.
+IVs derive from the previous MAC, and the chain in each direction only advances when
+the *other* direction speaks — so two commands sent back to back are encrypted under the
+same IV, and identical plaintext produces identical ciphertext.
+
+Be precise about what that buys, because the loose version of this claim is wrong. A
+reused IV does not turn ciphertext into plaintext on its own; no arithmetic does that
+without an anchor. What it yields is **equality** — the knowledge that two frames carry
+the same thing. That becomes recovery the moment one member of the group is known, and an
+attacker who has watched a building for a day knows plenty of them. The drill teaches the
+codebook, not a decryption.
+*Flag:* attacker reads the contents of a frame its own decryptor could not open, by
+matching it to a frame whose contents it already knew.
 
 **4.4 The null ciphers** · Silver
 SCS_15 and SCS_16 authenticate without encrypting. Some deployments use them believing

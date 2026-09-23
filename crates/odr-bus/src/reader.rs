@@ -139,6 +139,18 @@ pub struct PdConfig {
     /// match, or the handshake completes and every session frame then fails its
     /// MAC check.
     pub mac_len: u8,
+
+    /// Whether this PD encrypts the payloads it seals, as opposed to merely
+    /// authenticating them.
+    ///
+    /// `true` is normal: a sealed reply uses SCS_18, ciphertext and all. Setting
+    /// it to `false` drops the PD to SCS_16 — a security block that carries a MAC
+    /// and leaves the payload in the clear. That is a real, specified mode, and
+    /// some deployments run it believing "secure channel is on" means the card
+    /// number is hidden. It is not. This is what curriculum drill 4.4 is about,
+    /// and why the null cipher needs to be reachable from a scenario rather than
+    /// only constructible by hand.
+    pub encrypt_payloads: bool,
 }
 
 impl Default for PdConfig {
@@ -166,6 +178,7 @@ impl Default for PdConfig {
             busy_policy: BusyPolicy::Never,
             reader_number: 0,
             mac_len: 4,
+            encrypt_payloads: true,
         }
     }
 }
@@ -207,6 +220,13 @@ impl PdConfig {
     /// Set the busy policy.
     pub fn with_busy(mut self, policy: BusyPolicy) -> PdConfig {
         self.busy_policy = policy;
+        self
+    }
+
+    /// Run the secure channel as a null cipher — MAC only, payload in the clear —
+    /// for curriculum drill 4.4. See [`PdConfig::encrypt_payloads`].
+    pub fn with_null_cipher(mut self) -> PdConfig {
+        self.encrypt_payloads = false;
         self
     }
 
@@ -632,7 +652,13 @@ impl Reader {
                         format_code: raw.format_code,
                         bit_count: raw.bit_count,
                     });
-                    let frame = self.seal_or_plain(cfg, seq, Reply::Raw, raw.encode(), true);
+                    let frame = self.seal_or_plain(
+                        cfg,
+                        seq,
+                        Reply::Raw,
+                        raw.encode(),
+                        cfg.encrypt_payloads,
+                    );
                     out.delivered_read = Some(read);
                     Some(frame)
                 } else {

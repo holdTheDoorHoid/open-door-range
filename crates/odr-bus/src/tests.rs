@@ -725,6 +725,57 @@ fn two_transmitters_at_once_destroy_each_other() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn drill_4_4_a_null_cipher_pd_seals_the_card_number_in_the_clear() {
+    // SCS_16 authenticates without encrypting. A deployment running it believes
+    // Secure Channel is protecting the card number. It is not, and this asserts
+    // that the range can reach that configuration from a scenario rather than
+    // only by hand-building a frame.
+    let cred = card(42, 1337);
+    let access = AccessList::new().with_credential(&cred).unwrap();
+    let mut bench = osdp_bench(
+        23,
+        osdp_spec(
+            AcuConfig::polling([0x01]).with_default_key(ScRequirement::IfAvailable),
+            alloc::vec![PdConfig::at(0x01)
+                .with_default_key(ScRequirement::IfAvailable)
+                .with_null_cipher()],
+            access,
+        ),
+    )
+    .unwrap();
+    let pd = bench.pd();
+    bench.world.run_until(2_000_000).unwrap();
+    assert!(bench.world.reader(pd).unwrap().secure_channel_established());
+
+    bench
+        .world
+        .present(pd, 2_000_000, presentation(0, &cred))
+        .unwrap();
+    bench.world.run_until(4_000_000).unwrap();
+
+    let raw = bench
+        .world
+        .log()
+        .bus_frames()
+        .find(|(_, _, f)| f.reply_code() == Some(Reply::Raw))
+        .map(|(_, _, f)| f.clone())
+        .expect("a card read crossed the bus");
+
+    // Secure Channel is up, the frame carries a security block and a MAC --
+    // and the card number is sitting in it in plain sight.
+    assert!(
+        !raw.is_encrypted(),
+        "SCS_16: MAC only, payload in the clear"
+    );
+    let read = RawCardRead::decode(&raw.payload).expect("the payload parses");
+    assert_eq!(
+        BitVec::from_bools(&read.bits()),
+        cred.encode().unwrap(),
+        "anyone on the wire reads the card number without a key"
+    );
+}
+
+#[test]
 fn drill_3_2_secure_channel_under_scbk_d_carries_an_encrypted_card_read() {
     let cred = card(42, 1337);
     let access = AccessList::new().with_credential(&cred).unwrap();
