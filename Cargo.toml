@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/odr-wiegand",
+    "crates/odr-osdp",
+    "crates/odr-bus",
+    "crates/odr-attack",
+    "crates/odr-detect",
+    "crates/odr-scenario",
+    "crates/odr-wasm",
+    "crates/odr-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/holdTheDoorHoid/open-door-range"
+authors = ["Open Door Range contributors"]
+
+[workspace.dependencies]
+odr-wiegand = { path = "crates/odr-wiegand" }
+odr-osdp = { path = "crates/odr-osdp" }
+odr-bus = { path = "crates/odr-bus" }
+odr-attack = { path = "crates/odr-attack" }
+odr-detect = { path = "crates/odr-detect" }
+odr-scenario = { path = "crates/odr-scenario" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes = "0.8"
