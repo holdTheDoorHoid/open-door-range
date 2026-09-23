@@ -525,8 +525,14 @@ kbd {
   html, body { overflow: hidden; }
   .app {
     height: 100%;
-    grid-template-rows: auto auto auto auto minmax(260px, 1fr) minmax(120px, 0.5fr);
-    overflow: hidden;
+    grid-template-rows: auto auto auto auto minmax(200px, 1fr) minmax(112px, 0.5fr);
+    /* Scrolls rather than clips. The six bands need roughly 900px of viewport
+       height to sit still, and a 1366x768 laptop -- which is what someone at
+       the back of a workshop room is on -- has about 660. Clipping put the
+       drill objective off screen with no way to reach it, which is the worst
+       possible thing to lose: it is the band a beginner is reading. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   /* The bench gets the flexible space — it is the instrument. Everything above
      it is trimmed to the smallest size that is still legible from the back of a
