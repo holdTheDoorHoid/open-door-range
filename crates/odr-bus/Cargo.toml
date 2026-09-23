@@ -4,5 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "The Open Door Range world model: virtual wires and buses, reader/controller/door state machines, and taps"
 
 [dependencies]
+# odr-osdp's own `std` feature only adds `std::error::Error` impls and is on by
+# default; it does not stop either crate building for wasm32-unknown-unknown.
+odr-osdp = { workspace = true }
+odr-wiegand = { workspace = true }
+
+[features]
+# `std` only adds `std::error::Error` impls for the error types, here and in
+# odr-osdp. Everything else is `no_std` + `alloc`, so the crate builds for
+# wasm32-unknown-unknown either way. See DESIGN.md section 3.
+default = ["std"]
+std = []
