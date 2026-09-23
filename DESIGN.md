@@ -104,12 +104,23 @@ reproducible, and a capture can be replayed identically on any machine.
 Newline-delimited JSON, one line per observed event:
 
 ```
-{"t_us": 12345, "line": "rs485" | "wiegand", "dir": "acu_to_pd" | "pd_to_acu" | "wire",
- "bytes": "53000e00..."}
+{"t_us": 12345, "line": "rs485" | "wiegand" | "clock_data",
+ "dir": "acu_to_pd" | "pd_to_acu" | "wire",
+ "bytes": "53000e00...", "bits": 26}
 ```
 
 `odr-cli` reads it today. Importers for TheTick's capture output, logic-analyser CSV, and
 pcap come later without touching the engines.
+
+Two amendments, made 2026-09-23 once `odr-bus` had built against the original:
+
+- **`clock_data` is a third line type.** Folding it into `wiegand` would have meant the
+  format could not say which of two protocols it had recorded, which is exactly the
+  question an importer needs answered.
+- **`bits` is optional and authoritative when present.** A 26-bit Wiegand frame occupies
+  four bytes, and without a bit count an importer cannot tell 26 from 32 — it has to guess
+  from parity, which is ambiguous by construction. Writers that know the true length say
+  so; readers that see no `bits` field fall back to enumerating the parity-valid readings.
 
 ## 4. Product decisions
 
