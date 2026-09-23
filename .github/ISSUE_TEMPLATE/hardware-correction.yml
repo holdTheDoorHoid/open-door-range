@@ -1,0 +1,56 @@
+name: Hardware correction
+description: You ran this against a real reader or controller and it differs. This is the most valuable report this project can receive.
+title: "[hardware] "
+labels: ["hardware-correction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The OSDP specification is paywalled and the open implementations disagree with each
+        other in places, so every protocol crate here ships a list of what it was unsure
+        about. If you have a bench, you have something this project cannot buy.
+
+        You do not need to have a fix. A capture and a description is plenty.
+  - type: input
+    id: hardware
+    attributes:
+      label: What you tested against
+      description: Reader and controller make, model and firmware version, as precisely as you can.
+      placeholder: e.g. HID Signo 20B, firmware 1.4.2, against a Mercury LP1502
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the range predicted
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What the hardware actually did
+    validations:
+      required: true
+  - type: textarea
+    id: capture
+    attributes:
+      label: The bytes
+      description: |
+        A capture if you have one, ideally in the project's own format (one JSON object per
+        line). Raw hex is fine too. Please redact real credential numbers — we do not want
+        anybody's actual badge in a public issue.
+      render: text
+  - type: input
+    id: ledger
+    attributes:
+      label: Which uncertainty ledger entry this resolves
+      description: If it matches something in a crate README's uncertainty list, name it. If not, leave blank.
+  - type: checkboxes
+    id: authorised
+    attributes:
+      label: Confirmation
+      options:
+        - label: This capture is from equipment I own or was authorised to test.
+          required: true
+        - label: I have removed any real credential numbers.
+          required: true
