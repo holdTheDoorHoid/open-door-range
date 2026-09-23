@@ -4,5 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "The Open Door Range command-line tool: decode, detect, verify and replay a real capture through the same engine the browser runs"
+
+[[bin]]
+name = "odr"
+path = "src/main.rs"
+
+[lib]
+name = "odr_cli"
+path = "src/lib.rs"
 
 [dependencies]
+# The whole point of this crate is that it is the *other* consumer of the same
+# engine the site runs (DESIGN.md section 3). It adds no analysis of its own
+# that the engine does not already do, and it adds no third-party dependency:
+# the workspace has kept to `aes` alone and a command-line tool this small does
+# not justify breaking that. The argument parser is hand-rolled in `args`.
+odr-bus = { workspace = true }
+odr-detect = { workspace = true }
+odr-osdp = { workspace = true }
+odr-wiegand = { workspace = true }
