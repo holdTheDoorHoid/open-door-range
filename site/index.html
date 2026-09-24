@@ -33,6 +33,10 @@
     <span class="benchstate__label">Bench</span>
   </div>
 
+  <!-- Anything the engine refused, said out loud. Never a dialog: the keyboard
+       should not have to escape a sentence. -->
+  <p class="notice" id="notice" role="status" aria-live="polite" hidden></p>
+
   <section class="topology" aria-labelledby="topology-h">
     <div class="topology__hd">
       <h2 id="topology-h">Topology</h2>
@@ -130,6 +134,7 @@
       <p class="drill__objective"><strong>Objective</strong><span id="drill-objective"></span></p>
       <div id="drill-guidance"></div>
       <div class="hintbox" id="drill-hints"></div>
+      <div id="drill-submit"></div>
       <p style="font-size:var(--fs-xs);color:var(--text-faint);max-width:78ch">
         Bronze, Silver and Gold change the guidance above. The bench below and above is
         identical in all three.

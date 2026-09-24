@@ -572,3 +572,96 @@ kbd {
   * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
   .doorleaf { transition: none; }
 }
+
+/* ------------------------------------------------------------------ *
+ * Notices — what the engine refused
+ * ------------------------------------------------------------------ */
+
+.notice {
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--warn, var(--border-strong));
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+  max-width: 90ch;
+}
+
+/* A value the engine reports and will not be asked to change. It is shown as
+ * text rather than a dead control: still visible, just not yours to set. */
+.cfgvalue {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-sm);
+  padding: 2px 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  background: var(--surface-3);
+}
+
+.help--fixed {
+  border-left: 3px solid var(--border-strong);
+  padding-left: var(--sp-2);
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------------ *
+ * The typed claim a drill takes
+ * ------------------------------------------------------------------ */
+
+.submitbox {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  max-width: 78ch;
+}
+
+.submitbox h3 {
+  margin: 0 0 .2rem;
+  font-size: var(--fs-sm);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-faint);
+}
+
+.submitbox__prompt {
+  margin: 0 0 var(--sp-2);
+  font-weight: 600;
+}
+
+.submitgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.submitfield label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.submitfield input[type="text"],
+.submitfield input[type="number"],
+.submitfield select {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.submitfield .help {
+  margin: .2rem 0 0;
+}
+
+/* The traffic list is honest by default, and a Module 5 day is 3,500 rows.
+ * content-visibility lets the browser skip layout for the rows nobody is
+ * looking at, so scrolling and playback stay responsive without the list
+ * being shortened — which would be the one thing docs/UI.md forbids. */
+.traffic tbody tr {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 22px;
+}

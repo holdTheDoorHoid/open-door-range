@@ -5,12 +5,24 @@
  * same summary lines are mirrored into the always-visible bench strip at the
  * top of the page, so a learner wondering why their replay failed can see that
  * Secure Channel is on without opening anything at all.
+ *
+ * MORE THAN ONE TAP MAY SIT ON A LINK. Drill 4.3 needs an inline implant and a
+ * separate passive analyser on the same pair — which is what a real operator
+ * carries and what odr-bus allows — so the taps for a link are a list you add
+ * to and remove from, not a single choice. Two taps in the same mode are
+ * refused by the engine, because two identical probes are not a second
+ * capability.
+ *
+ * FIELDS THE ENGINE MARKS `fixed` ARE RENDERED DISABLED, with the engine's own
+ * sentence underneath. A bench is assembled from a scenario and a seed, and a
+ * control that pretended to change one after the fact would be the interface
+ * lying about what it does — which is the thing docs/UI.md's "collapse, never
+ * remove" rule exists to prevent.
  */
 
 import { el, clear } from '../util.js';
 
 const TAP_MODES = [
-  ['none', 'No tap', 'The link runs untouched.'],
   ['sniff', 'Sniff', 'Listen only. The link is not cut and nothing is written to it.'],
   ['inject', 'Inject', 'Listen, and write frames of your own onto the link.'],
   ['inline', 'Inline (implant)', 'The link is CUT and everything passes through the tap. This is the one that can rewrite a frame in flight.'],
@@ -31,27 +43,52 @@ export function renderConfig(host, { groups, topology, openGroupId, onSet, onTap
       el('span', { class: 'cfgsummary__line' }, tapSummaryLine))));
   const tapFields = el('div', { class: 'cfgfields' });
   for (const link of topology.links.filter((l) => l.tappable)) {
-    const current = topology.taps.find((t) => t.linkId === link.id);
+    const fitted = topology.taps.filter((t) => t.linkId === link.id);
     const fs = el('fieldset', { style: 'border:1px solid var(--border);border-radius:var(--radius);margin:0 0 var(--sp-3);padding:var(--sp-2)' });
     fs.append(el('legend', { style: 'font-size:var(--fs-sm);font-weight:600' }, link.id.replace('-', ' → ')));
-    for (const [mode, label, help] of TAP_MODES) {
-      const id = `tap-${link.id}-${mode}`;
-      const checked = (current ? current.mode : 'none') === mode;
-      const row = el('div', { style: 'margin-bottom:var(--sp-1)' },
-        el('input', {
-          type: 'radio', name: `tap-${link.id}`, id, value: mode, checked: checked || null,
-          onchange: () => onTap(link.id, mode),
-        }),
-        ' ', el('label', { for: id, style: 'font-size:var(--fs-sm);font-weight:600' }, label),
-        el('p', { class: 'help', style: 'margin:0 0 0 1.6em' }, help));
-      fs.append(row);
+
+    if (fitted.length) {
+      const list = el('ul', { style: 'list-style:none;margin:0 0 var(--sp-2);padding:0' });
+      for (const tap of fitted) {
+        const help = (TAP_MODES.find(([m]) => m === tap.mode) || [])[2] || '';
+        list.append(el('li', { style: 'display:flex;gap:var(--sp-2);align-items:baseline;margin-bottom:var(--sp-1)' },
+          el('strong', { style: 'font-size:var(--fs-sm)' }, tap.mode.toUpperCase()),
+          tap.prePlaced ? el('span', { class: 'chip__k' }, 'placed by Bronze') : null,
+          el('span', { class: 'help', style: 'flex:1;margin:0' }, help),
+          el('button', { class: 'btn btn--ghost', onclick: () => onTap(link.id, 'remove', tap.id) }, 'Remove')));
+      }
+      fs.append(list);
+    } else {
+      fs.append(el('p', { class: 'help', style: 'margin:0 0 var(--sp-2)' }, 'Nothing clipped on. The link runs untouched.'));
     }
+
+    const add = el('div', { class: 'seg', role: 'group', 'aria-label': `Add a tap to ${link.id}` });
+    for (const [mode, label, help] of TAP_MODES) {
+      const already = fitted.some((t) => t.mode === mode);
+      add.append(el('button', {
+        class: 'btn',
+        disabled: already || null,
+        title: already ? `There is already a ${mode} tap on this link.` : help,
+        onclick: () => onTap(link.id, mode),
+      }, `+ ${label}`));
+    }
+    fs.append(add);
+    fs.append(el('p', { class: 'help', style: 'margin-top:var(--sp-1)' },
+      'More than one tap can sit on a pair. Drill 4.3 needs two: an implant in the path and a separate analyser listening to it.'));
     tapFields.append(fs);
   }
   tapBox.append(tapFields);
   host.append(tapBox);
 
   // ---- everything else ------------------------------------------------
+  // The engine reports most of these and will not be asked to change them.
+  // Said once, here, rather than repeated under every control.
+  const fixed = groups.flatMap((g) => g.fields).find((f) => f.fixed);
+  if (fixed) {
+    host.append(el('p', { class: 'help help--fixed', style: 'margin:0 0 var(--sp-3);max-width:60ch' },
+      fixed.fixedReason));
+  }
+
   for (const g of groups) {
     const box = el('details', {
       class: 'cfggroup' + (g.alert ? ' cfggroup--alert' : ''),
@@ -68,7 +105,13 @@ export function renderConfig(host, { groups, topology, openGroupId, onSet, onTap
     for (const f of g.fields) {
       const id = `f-${g.id}-${f.id}`;
       let control;
-      if (f.type === 'boolean') {
+      if (f.fixed) {
+        // The engine reports this value and cannot be asked to change it.
+        // Showing it as text rather than as a dead control is the honest
+        // rendering: it is still visible, it is just not yours to set.
+        control = el('output', { id, class: 'cfgvalue' },
+          f.type === 'boolean' ? (f.value ? 'yes' : 'no') : String(f.value));
+      } else if (f.type === 'boolean') {
         control = el('input', {
           type: 'checkbox', id, checked: f.value ? true : null,
           onchange: (e) => onSet(g.id, f.id, e.target.checked),
@@ -82,7 +125,9 @@ export function renderConfig(host, { groups, topology, openGroupId, onSet, onTap
           onchange: (e) => onSet(g.id, f.id, e.target.value),
         });
       }
-      fields.append(el('div', { class: 'cfgfield' }, el('label', { for: id }, f.label), control));
+      fields.append(el('div', { class: 'cfgfield' },
+        el('label', { for: id }, f.label, f.critical ? el('span', { class: 'chip--alert', style: 'margin-left:.4em' }, '▲') : null),
+        control));
       if (f.help) fields.append(el('p', { class: 'help' }, f.help));
     }
     box.append(fields);

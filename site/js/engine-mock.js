@@ -1,14 +1,22 @@
 /*
- * engine-mock.js — a stand-in for crates/odr-wasm.
+ * engine-mock.js — the REFERENCE IMPLEMENTATION of the engine contract.
  *
- * This file is the ONLY place the front end knows anything about protocol
- * bytes, drills or simulation state. Everything the interface draws comes
- * through the object returned by createEngine(). When the WebAssembly build is
- * ready, ship an engine-wasm.js exposing the same named export and change the
- * one import in js/app.js. Nothing else moves.
+ * The site ships with engine-wasm.js — crates/odr-wasm, the real engine —
+ * imported by js/app.js. This file is kept, deliberately, for two reasons:
  *
- * The contract this file implements is written down in ../ENGINE-API.md.
- * If you change a shape here, change it there first.
+ *   1. It is the readable statement of what ../ENGINE-API.md means. A shape
+ *      that is hard to produce here is a shape the contract should not ask for.
+ *   2. It lets the site be worked on with no Rust toolchain and no site/pkg
+ *      build: swap the one import in js/app.js and the interface runs.
+ *
+ *        import { createEngine } from './engine-mock.js';
+ *
+ * It implements ENGINE_API_VERSION 1. The contract is now at 2 — see the
+ * "What changed in version 2" section of ../ENGINE-API.md for the five
+ * differences; the site tolerates both, because every v2 addition is either a
+ * new call the site checks for or a field it renders when present.
+ *
+ * If you change a shape here, change it in ../ENGINE-API.md first.
  *
  * The bytes below are built the way the real crates build them — real
  * CRC-16/AUG-CCITT, real control bytes, real security block layout — so the

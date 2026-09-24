@@ -80,6 +80,30 @@ export function renderDrill(refs, { drill, band, flag, complete }) {
   }
 }
 
+/**
+ * The calendar date the bar would finish on.
+ *
+ * The engine produces a DURATION and stops there, deliberately: it has no wall
+ * clock and no epoch, and inventing one to print "27 March 2035" would be the
+ * engine claiming to know something it does not. docs/UI.md decided the date is
+ * rendered in full, so the site — which does have a clock — adds it. This is
+ * the only wall-clock arithmetic on this side of the boundary and nothing a
+ * flag depends on reads it.
+ */
+function projectedDate(remainingSeconds, projected) {
+  // engine-mock.js, the v1 reference implementation, already puts a date in
+  // `projected`. Do not print two.
+  if (typeof projected === 'string' && projected.includes(' — ')) return '';
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return '';
+  const years = remainingSeconds / (365.2425 * 24 * 3600);
+  if (years >= 8000) {
+    return ` — the year ${Math.round(new Date().getFullYear() + years).toLocaleString('en-GB')} CE`;
+  }
+  const when = new Date(Date.now() + remainingSeconds * 1000)
+    .toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  return ` — finishing ${when}`;
+}
+
 export function renderTasks(host, { tasks, onStart }) {
   clear(host);
   for (const t of tasks) {
@@ -93,7 +117,9 @@ export function renderTasks(host, { tasks, onStart }) {
       'aria-label': t.label,
     }, fill));
     box.append(el('p', { class: 'task__meta' },
-      `${fmtBig(t.done)} / ${fmtBig(t.total)} — ${(t.fraction * 100).toPrecision(3)}% — projected completion: ${t.projected}`));
+      `${fmtBig(t.done)} / ${fmtBig(t.total)} — ${(t.fraction * 100).toPrecision(3)}% — `,
+      el('strong', {}, t.projected),
+      projectedDate(t.remainingSeconds, t.projected)));
     box.append(el('p', { class: 'task__note' }, t.note));
     if (!t.shortDone) {
       box.append(el('button', { class: 'btn', onclick: () => onStart(t.id) }, `Run the ${t.shortLabel}`));

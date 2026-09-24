@@ -1,12 +1,21 @@
 /*
  * app.js — wiring.
  *
- * The ONLY line that changes when the WebAssembly engine lands is the import
- * below. Everything downstream talks to the interface described in
- * ../ENGINE-API.md and knows nothing about how the engine is implemented.
+ * The ONE line that chooses the engine is the import below. Everything
+ * downstream talks to the interface described in ../ENGINE-API.md and knows
+ * nothing about how the engine is implemented.
+ *
+ *   './engine-wasm.js'  — crates/odr-wasm, the real engine. Needs site/pkg,
+ *                         built by `wasm-pack build crates/odr-wasm
+ *                         --target web --out-dir ../../site/pkg`.
+ *   './engine-mock.js'  — the reference implementation, in JavaScript. No Rust
+ *                         toolchain, no build step. Useful for working on the
+ *                         interface itself.
+ *
+ * Both are verified to run this file unchanged.
  */
 
-import { createEngine } from './engine-mock.js';
+import { createEngine } from './engine-wasm.js';
 
 import { $, el, clear, fmtT, fmtTShort, trapFocus } from './util.js';
 import { store } from './store.js';
@@ -17,6 +26,7 @@ import { renderInspector } from './ui/inspector.js';
 import { renderConfig, renderBenchState } from './ui/config.js';
 import { renderCourse } from './ui/course.js';
 import { renderDrill, renderTasks } from './ui/drill.js';
+import { renderSubmission } from './ui/submission.js';
 
 const engine = await createEngine();
 
@@ -54,6 +64,7 @@ const refs = {
     id: $('#drill-id'), title: $('#drill-h'), summary: $('#drill-summary'),
     objective: $('#drill-objective'), band: $('#drill-band'),
     guidance: $('#drill-guidance'), hints: $('#drill-hints'), flag: $('#flagcard'),
+    submit: $('#drill-submit'),
     bandButtons: Array.from(document.querySelectorAll('[data-band]')),
   },
 };
@@ -172,6 +183,7 @@ function renderTrafficView() {
   refs.trafficCount.textContent = state.collapseIdle && result.collapsed
     ? `${result.rows.length} shown · ${result.collapsed.hiddenFrames} hidden`
     : `${result.total} frames`;
+  rowsChanged();
 }
 
 function renderDrillView(drill) {
@@ -183,6 +195,19 @@ function renderDrillView(drill) {
     updateCourseProgress();
   }
   renderDrill(refs.drill, { drill, band: state.band, flag, complete });
+  renderSubmission(refs.drill.submit, {
+    // engine.submission() is a v2 call. The reference implementation in
+    // engine-mock.js is v1 and does not have it, and the site is expected to
+    // run on either.
+    spec: drill && engine.submission ? engine.submission() : null,
+    onField: (id, value) => {
+      if (engine.submitField) engine.submitField(id, value);
+      // A Module 5 rule set is RUN rather than compared, so the bench itself
+      // changes: re-read everything rather than only the flag card.
+      refreshBench();
+    },
+    onClear: () => { if (engine.clearSubmission) engine.clearSubmission(); refreshBench(); },
+  });
   renderTasks(refs.tasks, {
     tasks: engine.taskStates(Date.now() - state.taskStart),
     onStart: (id) => { engine.startTask(id); renderDrillView(drill); },
@@ -195,17 +220,31 @@ function renderConfigView() {
     topology: engine.topology(),
     openGroupId: openConfig.pendingGroup,
     onSet: (g, f, v) => {
-      engine.setConfig(g, f, v);
+      const res = engine.setConfig(g, f, v);
+      // The engine may refuse. Surfacing the reason is the contract (§3): a
+      // control that silently discarded input would be worse than no control.
+      if (res && res.ok === false) notify(res.error);
       refreshBench();
     },
-    onTap: (linkId, mode) => {
-      const existing = engine.topology().taps.find((t) => t.linkId === linkId);
-      if (mode === 'none') { if (existing) engine.removeTap(existing.id); }
-      else engine.addTap({ linkId, mode });
+    onTap: (linkId, mode, tapId) => {
+      const res = mode === 'remove'
+        ? engine.removeTap(tapId)
+        : engine.addTap({ linkId, mode });
+      if (res && res.ok === false) notify(res.error);
       // Taps gate what the bus carries, so the traffic and the timeline change too.
       refreshBench();
     },
   });
+}
+
+/** Say something the engine refused, without a dialog the keyboard has to escape. */
+function notify(message) {
+  if (!message) return;
+  const host = $('#notice');
+  host.textContent = message;
+  host.hidden = false;
+  clearTimeout(notify.timer);
+  notify.timer = setTimeout(() => { host.hidden = true; }, 9000);
 }
 
 /** Anything that changes the bench: re-read everything the engine reports. */
@@ -241,7 +280,19 @@ function updateCourseProgress() {
  * Cursor
  * ---------------------------------------------------------------- */
 
+// The traffic list is in time order and the cursor moves monotonically most of
+// the time, so "which rows are in the past" changes by a handful of rows per
+// animation frame. Walking all of them every frame costs ~24 ms on the 3,552
+// frames of a Module 5 day; walking only the ones that crossed costs nothing.
+// The index is reset by rowsChanged() whenever the list is rebuilt.
 let lastPastIndex = -1;
+let cursorRows = [];
+
+function rowsChanged() {
+  cursorRows = Array.from(refs.trafficRows.querySelectorAll('tr[data-t]'));
+  lastPastIndex = -1;
+  for (const row of cursorRows) row.classList.add('row--future');
+}
 
 function refreshCursorUI() {
   const duration = engine.duration();
@@ -256,13 +307,17 @@ function refreshCursorUI() {
     renderTopologyView();
   }
 
-  // Dim frames that have not happened yet, without touching 800 rows a frame.
-  const rows = refs.trafficRows.querySelectorAll('tr[data-t]');
-  for (let i = 0; i < rows.length; i++) {
-    const past = Number(rows[i].dataset.t) <= state.cursorUs;
-    const dim = rows[i].classList.contains('row--future');
-    if (past && dim) rows[i].classList.remove('row--future');
-    else if (!past && !dim) rows[i].classList.add('row--future');
+  // Dim frames that have not happened yet, touching only the rows the cursor
+  // just crossed rather than every row in the list.
+  while (lastPastIndex + 1 < cursorRows.length
+         && Number(cursorRows[lastPastIndex + 1].dataset.t) <= state.cursorUs) {
+    lastPastIndex += 1;
+    cursorRows[lastPastIndex].classList.remove('row--future');
+  }
+  while (lastPastIndex >= 0
+         && Number(cursorRows[lastPastIndex].dataset.t) > state.cursorUs) {
+    cursorRows[lastPastIndex].classList.add('row--future');
+    lastPastIndex -= 1;
   }
 }
 

@@ -2,17 +2,66 @@
 
 What `site/` needs from `crates/odr-wasm`.
 
-The front end talks to exactly one object. `site/js/engine-mock.js` implements this
-contract today with canned-but-honest data; when the WebAssembly build is ready, ship
-`site/js/engine-wasm.js` exporting the same names and change one line in
-`site/js/app.js`:
+The front end talks to exactly one object. Two implementations of this contract ship:
+
+- **`site/js/engine-wasm.js`** — the real engine, `crates/odr-wasm` compiled to
+  WebAssembly. This is what `site/js/app.js` imports.
+- **`site/js/engine-mock.js`** — the reference implementation, in JavaScript, with
+  canned-but-honest data. Kept deliberately: it is the readable statement of what this
+  document means, and it lets the site be worked on without a Rust toolchain or a
+  `site/pkg` build.
+
+Switching between them is one line in `site/js/app.js`:
 
 ```js
-import { createEngine } from './engine-mock.js';   // → './engine-wasm.js'
+import { createEngine } from './engine-wasm.js';   // ← the real engine
+import { createEngine } from './engine-mock.js';   // ← the reference, no build needed
 ```
 
 Nothing else in the site imports the engine. If you find yourself needing to change a
 second file, the contract below is wrong and should be fixed here first.
+
+Build the real one with:
+
+```
+wasm-pack build crates/odr-wasm --target web --out-dir ../../site/pkg
+```
+
+`site/pkg` is generated and git-ignored; CI builds it before deploying.
+
+---
+
+## What changed in version 2
+
+Version 1 was written against the mock. The real engine needed five changes, each of
+which is the engine's behaviour winning over the document's guess. They are listed
+together here so a reader of version 1 can find them; each is also written into its own
+section below.
+
+1. **More than one tap may sit on a link** (§4). Version 1 said at most one and made
+   `addTap` change the mode of an existing tap. Drill 4.3 is an inline implant *and* a
+   passive analyser on the same pair — what a real operator carries, and what `odr-bus`
+   allows. `addTap` now adds; a second tap in the *same* mode on the same link is
+   refused, because two identical probes are not a second capability.
+2. **Configuration reports; it does not set** (§3). Every field now carries `fixed` and
+   `fixedReason`, and the wasm engine refuses every `setConfig`. A bench is assembled by
+   `odr-scenario` from a scenario id and a seed, and there is no seam for altering one
+   afterwards. The controls are still *visible*, which is what "collapse, never remove"
+   asks for; they are no longer pretended to be live.
+3. **Drills that take a typed claim now have somewhere to type it** (§9). Seven drills
+   plus the reference section submit a claim that `odr-scenario` checks against a value
+   the engine generated from its seed. The mock approximated those predicates by watching
+   which field you opened in the decode tree; the real engine cannot, so the contract
+   grew `engine.submission()`, `engine.submitField()` and `engine.clearSubmission()`.
+   **The engine composes the form** — drill 2.1's field list comes from the layout of the
+   frame that actually crossed the bus.
+4. **`engine.observe()` is advisory** (§9). No real predicate reads it. It is kept
+   because a future one might, and it deliberately does not bump `engine.version`.
+5. **`TaskState.projected` is a duration; the site adds the date** (§10). The engine has
+   no wall clock and no epoch, and inventing one to print a calendar date would be the
+   engine claiming to know something it does not. `remainingSeconds` is there and
+   `site/js/ui/drill.js` renders the date from it — the only wall-clock arithmetic on the
+   site's side, and nothing a flag depends on reads it.
 
 **Nothing in this API may touch the network.** The site's privacy promise is literal: no
 backend, no telemetry, no fetch of any kind at runtime. The wasm binary is loaded as a
@@ -24,14 +73,21 @@ static asset from the same origin and that is the only request the page ever mak
 
 ```js
 export const ENGINE_KIND;          // 'mock' | 'wasm'
-export const ENGINE_API_VERSION;   // integer; bump on a breaking change. Currently 1.
+export const ENGINE_API_VERSION;   // integer; bump on a breaking change. Currently 2.
 export async function createEngine(options?): Promise<Engine>;
 ```
 
 `createEngine` is async so the wasm build can `await init()` inside it. `options` is
 reserved; the site passes nothing today. The returned object must be usable immediately
-— it boots with a drill already loaded (the mock loads `1.1`; the site then calls
+— it boots with a drill already loaded (both engines load `1.1`; the site then calls
 `loadDrill` with whatever `localStorage` remembered).
+
+The wasm engine's methods return JSON **strings** across the boundary and
+`engine-wasm.js` parses them, so everything below still arrives as plain JavaScript
+values. That is a performance decision rather than a contract one: a string crosses once
+as a length-prefixed copy and the browser's own parser builds the graph in native code,
+where handing back a live object means one crossing per property. A drill-4.1 traffic
+list — 552 frames — costs about 5 ms that way.
 
 ### Types used throughout
 
@@ -133,6 +189,11 @@ reload is the honest way to get back to a consistent starting position.
 
 Free play. Same bench, no drill, no flag.
 
+In the wasm engine free play runs the bench's own script with **nothing performed on
+it**: the attacks belong to drills, because a drill is what says which attack this bench
+is for. A tap placed in free play is drawn and listens; it does not run an attack. The
+bench strip says which runner is in force, so this is visible rather than inferred.
+
 ### `engine.session` (property) → `Session`
 
 ```ts
@@ -143,7 +204,8 @@ type Session = {
   sandbox: boolean;
   title: string;             // '1.3 Replay' or 'Free play'
   durationUs: number;
-  seed: number;
+  seed: number;              // integer, always below 2^53 so it survives JSON exactly
+  runner: 'baseline' | 'observe-only' | 'solve';   // v2 — see §4
 };
 ```
 
@@ -181,9 +243,16 @@ type ConfigGroup = {
     min?: number; max?: number;                       // number only
     help: string;          // one sentence, shown under the control
     critical?: boolean;
+    fixed?: boolean;       // v2 — the engine reports this and will not set it
+    fixedReason?: string;  // v2 — why, in the engine's own words
   }>;
 };
 ```
+
+**`fixed` fields are rendered as text, not as a dead control.** The site draws the value
+and prints `fixedReason` once at the top of the panel. A disabled input that looked
+settable would be the interface telling a small lie about what it can do, which is the
+thing "collapse, never remove" exists to prevent.
 
 `summary` is a **correctness requirement**, not decoration. A learner who cannot see that
 Secure Channel is on while wondering why their replay failed has been misled by the
@@ -192,8 +261,22 @@ interface.
 ### `engine.setConfig(groupId, fieldId, value) → { ok, groups?, error? }`
 
 Applies immediately and affects everything the engine subsequently reports. On `ok:
-false`, return a human-readable `error`; the site will surface it rather than silently
-discarding the input.
+false`, return a human-readable `error`; the site surfaces it in the notice bar rather
+than silently discarding the input.
+
+**The wasm engine refuses every call**, and the reason is worth stating rather than
+working around. A bench is assembled by `odr-scenario::scenario::build`, which takes a
+`ScenarioId` and a seed and nothing else. There is no "the same scenario with Secure
+Channel switched on"; the scenario *is* the configuration. Building one here instead
+would mean this crate assembling worlds of its own — a second, divergent definition of
+every bench, sitting above the crate whose whole job is to define them, and a drill could
+then teach something `odr-cli` disagrees with. So the groups report the bench the
+scenario built, in the bench's own values, and the way to see the other setting is to
+open the drill that uses it.
+
+This is a real loss against the mock, which let you flip Secure Channel and watch the
+summary line change. What replaces it is that every value shown is now *true of the
+running simulation* rather than of a control panel beside it.
 
 ---
 
@@ -232,7 +315,16 @@ type Topology = {
 implant sitting in the gap between them. That picture is the point of the topology strip,
 so `cut` must be true for `inline` and false for everything else.
 
-At most one tap per link. `addTap` on a link that already has one changes its mode.
+**More than one tap may sit on a link.** Version 1 of this document said at most one, and
+that was wrong: drill 4.3's IV-reuse attack is an inline implant *and* a passive analyser
+on the same pair, which is what a real operator carries and what `odr-bus` allows. The
+drill's own `taps` list names both. `addTap` therefore **adds**; it does not change an
+existing tap's mode. A second tap in the *same* mode on the same link is refused, with a
+reason: two identical probes are not a second capability.
+
+The tap panel draws the taps on a link as a list you add to and remove from, and the
+topology strip draws an inline tap in the path with the link severed either side of it,
+and any other tap hanging off the link on a lead. With two fitted you see both.
 
 ### `engine.addTap({ linkId, mode }) → { ok, tap?, error? }`
 ### `engine.setTapMode(tapId, mode) → { ok, tap? }`
@@ -242,10 +334,27 @@ At most one tap per link. `addTap` on a link that already has one changes its mo
 must not produce injected frames, substituted credentials or downgraded PDCAP replies,
 and must not produce the door-open events that follow from them. The mock does this by
 tagging each attacker-produced frame and event with the capability it needs
-(`'any' | 'write' | 'inline'`) and filtering on the current taps. The real engine gets
-this for free by running the actual bus. The site depends on the behaviour either way:
-drill 1.3's flag is "the controller granted when no credential was presented", and it
-must not be earnable by pressing Run with no tap fitted.
+(`'any' | 'write' | 'inline'`) and filtering on the current taps. The site depends on the
+behaviour either way: drill 1.3's flag is "the controller granted when no credential was
+presented", and it must not be earnable by pressing Run with no tap fitted.
+
+**How the wasm engine does it.** `odr-scenario` is not incremental — it builds a bench,
+clips an attack on, runs the whole script and hands back one outcome — so the taps decide
+*which of its entry points the drill is driven with*, and `Session.runner` reports which:
+
+| Learner's taps | `runner` | What happens |
+|---|---|---|
+| satisfy the drill's `taps` list | `solve` | the attack is clipped on and performed |
+| present, but not the ones the attack needs | `observe-only` | a passive probe, the script run, no analysis |
+| none | `baseline` | the bench with nothing clipped to it |
+
+Each entry in the drill's list consumes a **distinct** tap, so drill 4.3 is not satisfied
+by one inline tap doing both jobs. Capability is ordered the way the hardware is: anything
+can listen, writing needs an injecting or inline tap, and cutting the link needs an inline
+one and nothing else will do.
+
+The bridge never decides a flag. It decides which run to perform; `odr-scenario` reads
+the world that came out and decides the flag.
 
 ---
 
@@ -337,9 +446,22 @@ type CollapsedRow = {
 ```
 
 `kind` is what drill predicates and the site's filters key off. Keep the names stable.
-The ones currently in use: `rf_present`, `wiegand`, `wiegand_substituted`, `poll`, `ack`,
-`raw`, `out`, `out_injected`, `cap`, `pdcap`, `pdcap_downgraded`, `chlng`, `ccrypt`,
-`scrypt`, `rmac_i`, `collapsed`.
+For a bus frame it is the lower-cased command or reply name, so the full set is the OSDP
+code set: `poll`, `ack`, `nak`, `busy`, `cap`, `pdcap`, `id`, `pdid`, `raw`, `out`,
+`led`, `buz`, `chlng`, `ccrypt`, `scrypt`, `rmac_i`, `keyset`, `lstat`, `lstatr` and so
+on. For a wire or RF frame it is `rf_present`, `wiegand` or `clockdata`.
+
+Two suffixes and one replacement carry the attacker's hand:
+
+- **`_injected`** — the frame came from a tap rather than from the endpoint whose address
+  it carries: `out_injected`, `wiegand_injected`.
+- **`_substituted`** — an inline tap consumed the real frame and emitted its own:
+  `wiegand_substituted`.
+- **`pdcap_downgraded`** — a `PDCAP` reply from a tap with the 0x09 communication-security
+  entry deleted. Named rather than suffixed because it is the downgrade attack and drill
+  5.2 is about recognising exactly this.
+
+Plus `collapsed`, for the rows §8 produces.
 
 ### `engine.frame(id) → FrameDetail | null`
 
@@ -398,6 +520,15 @@ marks the command byte `opaque`, the interface is lying.
 `sealed` is how "we hold the key" is expressed. The plaintext is rendered *beneath* the
 ciphertext with a KEY HELD marker on every row, so it can never be mistaken for something
 an observer had.
+
+**In the wasm engine `sealed` is real AES.** It is filled in only when the attacker's own
+knowledge base holds an SCBK for that address — recovered from the capture by the drill's
+attack, with a provenance saying how — and a shadow session reconstructed from the
+handshake actually decrypts the frame. `secure.keyHeld` says whether that happened.
+Drill 4.1's predicate insists the attacker held no key at any point, so on that bench
+every payload stays sealed and the traffic-analysis lesson survives intact; drill 3.2's
+attack recovers SCBK-D from the handshake and the card read opens, down to a decoded
+facility code and card number.
 
 Mark a field `offsetInPayload: -1` to show something that is conspicuously **absent** —
 the site renders it with `value: 'absent'`. That is how the downgraded PDCAP reply shows
@@ -462,6 +593,8 @@ type Flag = {
   simulated?: boolean;      // false for reference sections — renders as 'REFERENCE — no flag'
   evidence: string[];       // what the engine observed, in its own words, with times
   outstanding: string[];    // what is still missing. Shown only while unearned.
+  completion?: 'flag' | 'measurement' | 'reference';   // v2
+  measurement?: null | { label: string; value: string; compareWith: string };  // v2
 };
 ```
 
@@ -474,20 +607,59 @@ The site calls `flag()` after every learner action and writes completion to
 
 ### `engine.observe(action) → void`
 
-Some flags depend on the learner *reading* something the engine generated — drill 1.1
-("submit the facility code and card number the engine transmitted"), 2.1 ("label the byte
-offsets"). The site reports those actions so the engine can hold them as session state:
-
 ```ts
 { type: 'frame_selected', frameId, frameKind }
 { type: 'field_opened',   fieldId }
 { type: 'cursor',         tUs }
-{ type: 'diagnosis',      text? }        // for the diagnose-style drills, 0.5 / 5.1 / 5.3
+{ type: 'diagnosis',      text? }
 ```
 
-These are observations, not answers. The engine still decides whether the predicate holds.
-`engine.frame(id)` implies a `frame_selected` observation; the site does not send a
-duplicate.
+**Advisory as of v2.** The mock used these to approximate the predicates that take a
+typed claim: it watched which field you opened in the decode tree and called that the
+answer. The real predicates read the world, the attacker's knowledge base and the run's
+measurements, and none of them reads an observation. The call is kept because a future
+predicate might want it, and because removing it would be a breaking change for no gain.
+
+The wasm engine's `observe` deliberately does **not** bump `engine.version`: an
+observation changes no engine state, and a bump would drop the wrapper's caches on every
+cursor move.
+
+### `engine.submission() → SubmissionForm | null`   *(v2)*
+
+The seven drills that take a typed claim, plus the reference section, say what they want
+here. `null` when the drill wants nothing.
+
+```ts
+type SubmissionForm = {
+  prompt: string;            // what the drill asks for, in the engine's own words
+  fields: Array<{
+    id: string;
+    label: string;
+    type: 'text' | 'number' | 'boolean' | 'select';
+    help: string;
+    value: string;           // what the learner has entered so far, '' if nothing
+    options?: Array<[value: string, label: string]>;   // select only
+  }>;
+};
+```
+
+**The engine composes the form.** Drill 2.1's field list is one offset-and-length pair per
+field of the frame that actually crossed the bus, derived from the layout the engine
+generated; the site never has to know what an OSDP frame contains. Module 5's form is a
+choice of *rule set*, because a Module 5 drill submits a list of detectors rather than a
+value and the engine runs it rather than comparing it.
+
+### `engine.submitField(id, value) → Flag`   *(v2)*
+### `engine.clearSubmission() → Flag`   *(v2)*
+
+One field at a time, as a string; the engine parses. Both return the re-evaluated flag.
+A submission that changes what the engine *runs* — Module 5's rule set — re-runs the
+bench, so the site re-reads everything after a submission rather than only the flag card.
+
+These are claims, not answer strings: each is compared against a value this session's
+seed produced. A different seed gives a different correct answer and there is nothing in
+the repository to look up. That is why the bench's card panel does not print the facility
+code and card number: it would turn drill 1.1 into a lookup.
 
 ---
 
@@ -518,13 +690,23 @@ type TaskState = {
 This is the **only** place wall-clock time enters the engine, and it is deliberately not
 part of the simulation: it exists so the bar crawls at a rate the learner can feel.
 
-The rates must be defensible arithmetic, not drama. The mock uses 16 candidate frames per
-second for a 32-bit MAC forgery (an online attack, one round trip per attempt at 9600
-baud → ~8.5 years) and 18.5 credentials per second for a 26-bit Wiegand sweep at real
-wire timing (→ ~42 days). Keep whatever the engine can defend; put the reasoning in
-`note`.
+The rates must be defensible arithmetic, not drama. The wasm engine measures them off the
+bench rather than choosing them: `MacForger::us_per_attempt` is one round trip at this
+link's actual baud rate, and `BruteForcer::us_per_credential` is one Wiegand frame plus
+the settle time at this bench's actual wire timing. Turn the baud rate up and both numbers
+move. The reasoning is in `note`, in the engine's own words.
+
+**`projected` is a duration, not a date** (v2). The engine has no wall clock and no epoch;
+inventing one to print "27 March 2035" would be the engine claiming to know something it
+does not. `docs/UI.md` decided the date is rendered in full, so `site/js/ui/drill.js`
+computes it from `remainingSeconds` and appends it. That is the only wall-clock arithmetic
+on the site's side and nothing a flag depends on reads it.
 
 `startTask` marks the shortened run complete. The real bar is never marked complete.
+Note that in the wasm engine the shortened run has usually **already** completed by the
+time the bar appears: clipping the drill's tap on is what runs it, so the button is
+normally the "✔ the shortened run finished" state from the outset. The half that matters
+— a bar still crawling, with a date on it — is unaffected.
 
 ---
 
@@ -543,23 +725,45 @@ So you do not build it:
 
 ---
 
-## 12. Known mock shortcuts
+## 12. Where the two engines differ
 
-Things the mock fakes that the real engine should do properly. None of them change the
-shape of the API.
+`site/js/engine-mock.js` is the reference implementation and is kept. These are the places
+the two engines are not the same thing, so a reader of either knows what they are looking
+at.
 
-1. **Cryptograms, ciphertext and MACs are seeded pseudo-random filler.** Correct lengths,
-   correct positions, not the output of AES. The CRCs, control bytes, security-block
-   layout, lengths and Wiegand parity *are* real and computed.
-2. **Drill 4.1's "day" is 40 seconds of bus** carrying seven badge-ins. The real engine
-   should generate a full day; nothing in the interface changes when it does.
-3. **Several predicates are approximated.** `attacker.holdsKeys` is inferred from the
-   configured key plus the presence of a tap, rather than from an attacker actor that
-   actually derived them. Drills 3.3, 3.4, 3.5, 4.3 and the Module 5 detection scoring are
-   stubs against the real `odr-attack` and `odr-detect` behaviour.
-4. **Configuration changes do not re-run the scenario.** Setting Secure Channel on in the
-   mock changes the summary lines and the bench strip, but the canned traffic does not
-   regenerate. The real engine re-runs, and the site will pick that up with no change: it
-   re-reads `frames()`, `timeline()` and `stateAt()` after every `setConfig`.
-5. **Clock-and-data (drill 1.6) reuses the Wiegand scenario.** The link panel offers the
-   encoding; the mock does not produce a different bit stream for it.
+### What the real engine does properly
+
+1. **The bytes are real.** Cryptograms, ciphertext and MACs are AES, computed by
+   `odr-osdp`, not seeded filler. So are the CRCs, control bytes, security-block layout,
+   lengths and Wiegand parity, which the mock also got right.
+2. **`sealed` is real decryption** (§6). The mock printed a canned plaintext; the real
+   engine reconstructs the session from the handshake under a key the attacker's own
+   attack recovered, and refuses when it has no key.
+3. **The flags are the curriculum's predicates.** Every verdict, every line of `evidence`
+   and every line of `outstanding` comes from `odr-scenario`'s `flag.rs`, reading the
+   world's event log, the attacker's knowledge base and the run's measurements. The mock
+   approximated several of them; `attacker.holdsKeys`, in particular, was inferred from
+   the configured key plus the presence of a tap, and is now the attacker actually holding
+   one, with a provenance.
+4. **Taps gate by running a different attack, not by filtering rows** (§4).
+5. **Drill 4.1's day is the engine's day** — 36 seconds of bus carrying seven badge-ins,
+   generated by running the bus rather than written out. `odr-scenario`'s README explains
+   why it is 36 seconds and not 24 hours: the limit is the screen, not the engine.
+
+### What the real engine cannot do that the mock appeared to
+
+1. **Configuration is read-only** (§3). The mock's controls changed a summary line; the
+   real engine has no seam to change a bench after it is built, and says so rather than
+   offering a control that does nothing.
+2. **Free play performs no attack** (§2). A tap in free play listens.
+3. **Drill 1.6's clock-and-data is a separate bench**, which `odr-scenario` builds; the
+   mock reused the Wiegand scenario. This one is a straight improvement, listed here only
+   because version 1 named it as a shortcut.
+
+### What neither engine does
+
+**Drill 4.4 cannot show a null cipher in the reply direction.** `odr-bus`'s peripheral
+asks for encryption on `REPLY_RAW` unconditionally, so the bench runs a null cipher on the
+command half of the link and not the reply half. `odr-scenario`'s README names the
+one-field fix in `odr-bus` and the drill's guidance says plainly which half it can show.
+That is a change to another crate and is reported rather than worked around.

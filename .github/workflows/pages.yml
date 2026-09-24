@@ -1,8 +1,11 @@
 name: Deploy to Pages
 
-# Runs on demand until odr-wasm exists. Once the engine has a wasm-bindgen
-# surface, restore the push trigger so main deploys automatically.
+# odr-wasm now has a wasm-bindgen surface and site/js/app.js imports it, so
+# main deploys automatically again. The build step below is what produces
+# site/pkg, which is git-ignored on purpose.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
