@@ -24,8 +24,21 @@
     <p class="topbar__session" id="session-line">Loading the bench…</p>
     <button class="btn" id="btn-course" aria-haspopup="dialog">Course <span id="course-progress" class="chip__k"></span></button>
     <button class="btn" id="btn-config" aria-haspopup="dialog">Bench configuration</button>
+    <button class="btn" id="btn-share" title="Copy a link that reproduces this exact bench for everyone in the room">Share this bench</button>
     <button class="btn" id="btn-theme" title="Switch colour scheme">Theme</button>
   </header>
+
+  <!-- The share link for the current bench. Not a dialog: shown inline so it can
+       be read aloud, projected, or copied by keyboard without a trap to escape. -->
+  <div class="sharebar" id="sharebar" role="region" aria-label="Share this bench" hidden>
+    <label class="sharebar__label" for="share-url">Bench link — same drill, band and settings for everyone who opens it</label>
+    <div class="sharebar__row">
+      <input type="text" id="share-url" readonly aria-describedby="share-note">
+      <button class="btn" id="btn-share-copy">Copy</button>
+      <button class="btn btn--ghost" id="btn-share-close" aria-label="Hide the share link">✕</button>
+    </div>
+    <p class="sharebar__note" id="share-note">The seed travels in the link, so thirty people get an identical bench. The link carries only settings — no progress, nothing personal.</p>
+  </div>
 
   <!-- Nothing that changes the simulation is ever invisible. This strip is the
        always-on summary of every configuration group, folded or not. -->
@@ -157,7 +170,12 @@
       <span class="chip__k" id="course-summary"></span>
       <div class="topbar__spacer"></div>
       <button class="btn" id="btn-sandbox">Free play</button>
+      <button class="btn" id="btn-handouts" title="A paper reference, one sheet per module, ready to Print to PDF">Print handouts</button>
       <button class="btn btn--ghost" data-close-drawer aria-label="Close">✕</button>
+    </div>
+    <div class="course-booth">
+      <button class="btn btn--reset" id="btn-reset">Reset session</button>
+      <p class="course-booth__note">For the next person on a shared laptop. Clears saved progress in <strong>this browser only</strong> — nothing was ever stored anywhere else, so no one else's laptop is touched.</p>
     </div>
     <div class="drawer__body" id="course-body"></div>
   </div>
@@ -181,6 +199,19 @@
       <div id="config-body"></div>
     </div>
   </div>
+</div>
+
+<!-- Printable handouts. Hidden on screen until requested; when body.show-handouts
+     is set it replaces the app, and @media print emits it as clean pages so a
+     browser "Print to PDF" produces the reference an instructor puts on tables.
+     Built from the engine's own catalogue, so it cannot drift from the course. -->
+<div class="handout-view" id="handout-view" hidden>
+  <div class="handout-bar" id="handout-bar">
+    <button class="btn" id="btn-handout-print">Print / Save as PDF</button>
+    <button class="btn btn--ghost" id="btn-handout-back">← Back to the range</button>
+    <span class="handout-bar__note">One sheet per module. Use your browser's Print dialog and choose “Save as PDF”.</span>
+  </div>
+  <div class="handout-doc" id="handout-doc"></div>
 </div>
 
 <script type="module" src="js/app.js"></script>

@@ -129,7 +129,12 @@ Two amendments, made 2026-09-23 once `odr-bus` had built against the original:
 - **DECIDED — CTF flags, local only.** Progress lives in the browser. No backend, no
   accounts, no data collected about anyone who uses it. A village can run it competitively
   by having people show their screen.
-- **DECIDED — online is fine.** Plain GitHub Pages. No offline packaging work in v1.
+- **DECIDED — online is fine, and offline is now supported too.** The site is plain GitHub
+  Pages. v1 shipped online-only; offline was added afterwards at the maintainer's request,
+  because a workshop runs in a room on one access point. A service worker caches the app
+  shell and the wasm on first load, and `tools/make-offline-bundle.sh` produces a
+  self-contained folder to hand out on a USB stick. Both cache only same-origin assets, so
+  the request-free privacy property is preserved. See `docs/WORKSHOP.md`.
 - **DECIDED — GPLv3.** The OSDP dissector and Mellon detectors this shares lineage with
   were written inside a GPLv3 codebase, and copyleft keeps this from being absorbed into a
   closed vendor training product.

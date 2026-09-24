@@ -27,6 +27,14 @@ import { renderConfig, renderBenchState } from './ui/config.js';
 import { renderCourse } from './ui/course.js';
 import { renderDrill, renderTasks } from './ui/drill.js';
 import { renderSubmission } from './ui/submission.js';
+import {
+  parseShareParams, applyShareParams, buildShareUrl,
+  renderHandouts, registerOffline,
+} from './share.js';
+
+// Cache the app shell and the wasm for offline use, same-origin only. A no-op
+// where service workers are unavailable; the app runs identically without it.
+registerOffline();
 
 const engine = await createEngine();
 
@@ -486,6 +494,90 @@ for (const b of document.querySelectorAll('[data-close-drawer], .drawer__scrim')
 }
 
 /* ---------------------------------------------------------------- *
+ * Share this bench
+ * ---------------------------------------------------------------- */
+
+const shareBar = $('#sharebar');
+const shareInput = $('#share-url');
+
+function showShareLink() {
+  const url = buildShareUrl(engine);
+  shareInput.value = url;
+  shareBar.hidden = false;
+  shareInput.focus();
+  shareInput.select();
+  // Clipboard write is a local convenience; if it is blocked (permissions, an
+  // insecure origin) the link is still on screen, selected, ready to copy.
+  copyToClipboard(url).then((ok) => {
+    $('#btn-share-copy').textContent = ok ? 'Copied ✓' : 'Copy';
+  });
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, () => false);
+  }
+  try {
+    shareInput.select();
+    return Promise.resolve(document.execCommand('copy'));
+  } catch { return Promise.resolve(false); }
+}
+
+$('#btn-share').addEventListener('click', showShareLink);
+$('#btn-share-copy').addEventListener('click', () => {
+  copyToClipboard(shareInput.value).then((ok) => {
+    $('#btn-share-copy').textContent = ok ? 'Copied ✓' : 'Copy failed';
+    setTimeout(() => { $('#btn-share-copy').textContent = 'Copy'; }, 2500);
+  });
+});
+$('#btn-share-close').addEventListener('click', () => { shareBar.hidden = true; });
+
+/* ---------------------------------------------------------------- *
+ * Reset session — for the next person at a booth
+ * ---------------------------------------------------------------- */
+
+$('#btn-reset').addEventListener('click', () => {
+  const ok = window.confirm(
+    'Reset this session?\n\n'
+    + 'This clears saved progress and settings in THIS browser only. Nothing was '
+    + 'ever stored anywhere else, so no other laptop is affected.\n\n'
+    + 'The course starts fresh at drill 1.1.',
+  );
+  if (!ok) return;
+  store.reset();
+  state.band = store.band() || 'bronze';
+  // Drop any shared-bench parameters from the URL, so a reload after a reset is
+  // a genuinely clean start rather than re-applying the last shared link.
+  try { window.history.replaceState(null, '', window.location.pathname); } catch { /* ignore */ }
+  shareBar.hidden = true;
+  closeDrawer();
+  loadDrill('1.1', 'bronze');
+  updateCourseProgress();
+  notify('Session reset. This browser is a clean start — no other laptop was touched.');
+});
+
+/* ---------------------------------------------------------------- *
+ * Printable handouts
+ * ---------------------------------------------------------------- */
+
+function showHandouts() {
+  renderHandouts($('#handout-doc'), engine);
+  $('#handout-view').hidden = false;
+  document.body.classList.add('show-handouts');
+  const back = $('#btn-handout-back');
+  if (back) back.focus();
+}
+
+function hideHandouts() {
+  document.body.classList.remove('show-handouts');
+  $('#handout-view').hidden = true;
+}
+
+$('#btn-handouts').addEventListener('click', () => { closeDrawer(); showHandouts(); });
+$('#btn-handout-back').addEventListener('click', hideHandouts);
+$('#btn-handout-print').addEventListener('click', () => window.print());
+
+/* ---------------------------------------------------------------- *
  * Long-running tasks tick slowly and forever, which is the point.
  * ---------------------------------------------------------------- */
 
@@ -501,8 +593,31 @@ setInterval(() => {
  * Boot
  * ---------------------------------------------------------------- */
 
-loadDrill(store.lastDrill() || '1.1', state.band);
+// A shared bench link (?d=…&b=…&c=…, or after the hash) puts everyone on the
+// same starting point. No params → today's seedless default: the last drill this
+// browser remembered. See share.js for how state is encoded and why the seed is
+// verified rather than set.
+const shared = parseShareParams();
+if (shared && (shared.drill || shared.sandbox)) {
+  applyShareParams(engine, shared, notify);
+  // Bring the site's own state in line with what the engine just loaded.
+  const s = engine.session;
+  if (s.band) { state.band = s.band; store.setBand(s.band); }
+  state.cursorUs = 0;
+  state.running = false;
+  state.selectedFrameId = null;
+  state.collapseIdle = false;
+  state.taskStart = Date.now();
+  if (s.drillId) store.setLastDrill(s.drillId);
+  renderAll();
+  renderInspector(refs.inspector, { frame: null });
+} else {
+  loadDrill(store.lastDrill() || '1.1', state.band);
+}
 updateCourseProgress();
+
+// A ?view=handouts link boots straight into the printable reference.
+if (shared && shared.view === 'handouts') showHandouts();
 
 if (!store.available) {
   refs.session.append(el('span', { style: 'color:var(--warn)' }, ' · storage blocked, progress will not persist'));

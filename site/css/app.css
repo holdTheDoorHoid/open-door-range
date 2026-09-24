@@ -665,3 +665,133 @@ kbd {
   content-visibility: auto;
   contain-intrinsic-size: auto 22px;
 }
+
+/* ================================================================== *
+ * Workshop support — share links, booth reset, handouts
+ * ================================================================== */
+
+/* ---- Share this bench: an inline bar, never a modal ---- */
+.sharebar {
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent);
+}
+.sharebar__label {
+  display: block; font-size: var(--fs-sm); font-weight: 600;
+  color: var(--accent-text); margin-bottom: var(--sp-1);
+}
+.sharebar__row { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.sharebar__row input {
+  flex: 1 1 24ch; min-width: 20ch;
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+  background: var(--surface); color: var(--text);
+}
+.sharebar__note {
+  margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); max-width: 90ch;
+}
+
+/* ---- Booth reset: deliberate, and honestly scoped ---- */
+.course-booth {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.btn--reset { border-color: var(--deny); color: var(--deny); font-weight: 650; }
+.btn--reset:hover { background: var(--deny-soft); }
+.course-booth__note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); max-width: 60ch; }
+
+/* ---- Handout view: on screen, an overlay; on paper, the whole document ---- */
+.handout-view {
+  position: fixed; inset: 0; z-index: 80;
+  background: var(--bg); overflow: auto;
+}
+body.show-handouts { overflow: hidden; }
+body:not(.show-handouts) .handout-view { display: none; }
+
+.handout-bar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.handout-bar__note { font-size: var(--fs-xs); color: var(--text-muted); }
+
+.handout-doc {
+  max-width: 820px; margin: 0 auto; padding: var(--sp-6) var(--sp-5) var(--sp-6);
+  color: var(--text);
+}
+.handout-doc__head { margin-bottom: var(--sp-5); }
+.handout-doc__head h1 { font-size: var(--fs-xl); margin-bottom: var(--sp-2); }
+.handout-doc__sub { font-size: var(--fs-sm); color: var(--text-muted); margin: 0 0 var(--sp-3); }
+.handout-doc__url { font-family: var(--font-mono); color: var(--accent-text); }
+.handout-doc__ethics {
+  font-size: var(--fs-sm); color: var(--text-muted);
+  border-left: 3px solid var(--border-strong); padding-left: var(--sp-3); max-width: 74ch;
+}
+.handout-doc__foot {
+  margin-top: var(--sp-5); padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-xs); color: var(--text-faint);
+}
+
+.handout-module { margin-bottom: var(--sp-6); }
+.handout-module__hd { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-2); }
+.handout-module__num {
+  font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+.handout-module__hd h2 { font-size: var(--fs-lg); }
+.handout-module__blurb { color: var(--text-muted); font-size: var(--fs-sm); margin: 0 0 var(--sp-3); max-width: 74ch; }
+
+.handout-drill {
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: var(--sp-3); margin-bottom: var(--sp-3); background: var(--surface);
+  break-inside: avoid; page-break-inside: avoid;
+}
+.handout-drill__hd { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.handout-drill__id { font-family: var(--font-mono); color: var(--text-muted); font-weight: 600; }
+.handout-drill__title { font-weight: 650; }
+.handout-band {
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  border: 1px solid var(--border-strong); border-radius: 999px; padding: 0.05em 0.55em; margin-left: auto;
+}
+.handout-band--bronze { color: var(--attack); border-color: var(--attack); }
+.handout-band--silver { color: var(--text-muted); }
+.handout-band--gold { color: var(--warn); border-color: var(--warn); }
+.handout-band--reference { color: var(--accent-text); border-color: var(--accent); }
+
+.handout-field { display: grid; grid-template-columns: 12rem 1fr; gap: var(--sp-2); margin-bottom: var(--sp-1); align-items: baseline; }
+.handout-field__label {
+  font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+.handout-field__body { font-size: var(--fs-sm); }
+
+/* ---- Print: emit the handout document as clean pages ---- */
+@media print {
+  /* The app, its drawers, and the on-screen chrome never print. */
+  .app, .drawer, .handout-bar, .sharebar, .notice, .skip-link { display: none !important; }
+
+  html, body { overflow: visible !important; height: auto !important; background: #fff !important; color: #000 !important; }
+  body.show-handouts { overflow: visible !important; }
+
+  .handout-view {
+    position: static !important; inset: auto !important; display: block !important;
+    overflow: visible !important; background: #fff !important;
+  }
+  /* Force it visible even if the [hidden] attribute is still set: printing is
+     the one path that should always produce the reference. */
+  #handout-view[hidden] { display: block !important; }
+
+  .handout-doc { max-width: none; margin: 0; padding: 0; }
+
+  /* One handout per module: each module starts a fresh sheet. */
+  .handout-module { break-before: page; page-break-before: always; margin-bottom: 0; }
+  .handout-doc__head + .handout-module,
+  .handout-module:first-of-type { break-before: auto; page-break-before: avoid; }
+
+  .handout-drill { border-color: #999; background: #fff; }
+  .handout-doc__url, .handout-doc__ethics, .handout-field__body { color: #000; }
+
+  @page { margin: 16mm 14mm; }
+}
