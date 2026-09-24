@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+title: Open Door Range
+message: >-
+  If you use Open Door Range in teaching, research, or an
+  assessment, please cite it. The OSDP attacks it teaches are
+  the work of Bishop Fox; see the references below and credit
+  them too.
+type: software
+authors:
+  - name: LSOH
+    website: "https://github.com/holdTheDoorHoid"
+repository-code: "https://github.com/holdTheDoorHoid/open-door-range"
+url: "https://holdthedoorhoid.github.io/open-door-range/"
+abstract: >-
+  A browser-based virtual range for physical access control.
+  It simulates the path from credential to reader to controller
+  to door — Wiegand and clock-and-data through OSDP Secure
+  Channel — so that reader-to-panel attacks can be taught and
+  defended against without any hardware. One Rust engine,
+  compiled to WebAssembly for the site and to a native tool for
+  analysing real captures, so the teaching simulation and the
+  analyser are the same code.
+keywords:
+  - OSDP
+  - physical security
+  - access control
+  - Wiegand
+  - RFID
+  - security education
+license: GPL-3.0-or-later
+references:
+  - type: conference-paper
+    title: "Badge of Shame: Breaking into Secure Facilities with OSDP"
+    authors:
+      - family-names: Petro
+        given-names: Dan
+      - family-names: Vargas
+        given-names: David
+    year: 2023
+    notes: >-
+      Presented at Black Hat USA and DEF CON 31. The five OSDP
+      attacks this project teaches are from this research; the
+      accompanying tool is BishopFox/mellon.
+  - type: standard
+    title: "SIA OSDP (Open Supervised Device Protocol), v2.2.2"
+    year: 2024
+    institution:
+      name: Security Industry Association
