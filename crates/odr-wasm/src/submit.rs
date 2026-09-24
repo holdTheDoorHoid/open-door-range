@@ -108,7 +108,7 @@ pub fn spec(drill: &Drill, facts: &Facts, values: &BTreeMap<String, String>) -> 
             .collect(),
         (0, 6) => alloc::vec![sf(
             "read",
-            "I have read docs/BYPASS.md",
+            "I have read this section",
             "boolean",
             "This section simulates nothing and completes by being read. That is why it is marked \
              REFERENCE rather than filed under Bronze.",
@@ -163,15 +163,16 @@ fn layout_spec(prompt: &str, facts: &Facts, values: &BTreeMap<String, String>) -
     let mut fields = Vec::new();
     for span in layout.required() {
         let name = span.field.name();
+        let label = span.field.label();
         fields.push(sf(
             format!("off_{name}"),
-            format!("{name} — byte offset"),
+            format!("{label} — byte offset"),
             "number",
             "Counting from the first byte of the frame as it is shown in the inspector.",
         ));
         fields.push(sf(
             format!("len_{name}"),
-            format!("{name} — length"),
+            format!("{label} — length"),
             "number",
             "In bytes.",
         ));

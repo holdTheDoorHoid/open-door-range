@@ -402,6 +402,12 @@ fn collect(
         .iter()
         .any(|r| matches!(&r.kind, RecordKind::TapAction { action, .. } if matches!(action, TapAction::Replaced { .. } | TapAction::ReplacedBits { .. } | TapAction::Dropped { .. })));
 
+    // The reader's most recent wire output, so an inline tap's downstream frame
+    // can be labelled by whether it actually *changed* the bits, not merely by
+    // being inline. A transparent implant that passes a frame through unaltered
+    // is not a substitution, and calling it one contradicts the drill.
+    let mut last_reader_wire_bits: Option<BitVec> = None;
+
     for record in world.log().records() {
         match &record.kind {
             RecordKind::CredentialPresented {
@@ -462,12 +468,20 @@ fn collect(
                     odr_bus::log::WireKind::ClockData => "clockdata",
                 };
                 let base = line;
-                let k = if from_tap {
-                    if link_is_cut {
-                        format!("{base}_substituted")
-                    } else {
-                        format!("{base}_injected")
-                    }
+                // An inline tap that emits the same bits it received has swapped
+                // nothing; only a genuine change is a substitution.
+                let changed =
+                    from_tap && link_is_cut && last_reader_wire_bits.as_ref() != Some(bits);
+                let relayed = from_tap && link_is_cut && !changed;
+                if !from_tap {
+                    last_reader_wire_bits = Some(bits.clone());
+                }
+                let k = if changed {
+                    format!("{base}_substituted")
+                } else if relayed {
+                    format!("{base}_relayed")
+                } else if from_tap {
+                    format!("{base}_injected")
                 } else {
                     String::from(base)
                 };
@@ -486,12 +500,12 @@ fn collect(
                         "{}-bit pulse train — {}{}",
                         bits.len(),
                         describe_bits(bits),
-                        if from_tap {
-                            if link_is_cut {
-                                " (substituted)"
-                            } else {
-                                " (injected)"
-                            }
+                        if changed {
+                            " (substituted)"
+                        } else if relayed {
+                            " (passed through)"
+                        } else if from_tap {
+                            " (injected)"
                         } else {
                             ""
                         }

@@ -5,7 +5,7 @@
 
 import { el, clear, fmtTShort, DIR_LABEL, LINE_LABEL } from '../util.js';
 
-export function renderTraffic(tbody, { result, cursorUs, selectedId, onSelect }) {
+export function renderTraffic(tbody, { result, cursorUs, selectedId, filter, onSelect }) {
   clear(tbody);
   const rows = result.rows;
   for (const r of rows) {
@@ -42,8 +42,19 @@ export function renderTraffic(tbody, { result, cursorUs, selectedId, onSelect })
     tbody.append(tr);
   }
   if (!rows.length) {
-    tbody.append(el('tr', { role: 'row' }, el('td', { role: 'gridcell', colspan: '5', style: 'padding:1rem;color:var(--text-muted)' },
-      'Nothing matches. Clear the filter, or run the bench further.')));
+    // Three different empty states, and telling them apart matters: a filter
+    // that hid everything is the learner's own doing; a drill with no bus
+    // traffic at all (the Module 0 card attacks happen off the wire) is not a
+    // fault and there is nothing to "run" into existence.
+    let msg;
+    if (filter) {
+      msg = 'Nothing matches the filter. Clear it to see every frame.';
+    } else if (result.total === 0) {
+      msg = 'No bus traffic in this drill — the attack happens off the wire, not on it. The result is in the flag panel below.';
+    } else {
+      msg = 'Nothing here yet. Run the bench to generate traffic.';
+    }
+    tbody.append(el('tr', { role: 'row' }, el('td', { role: 'gridcell', colspan: '5', style: 'padding:1rem;color:var(--text-muted)' }, msg)));
   }
 }
 

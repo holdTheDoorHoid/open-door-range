@@ -186,7 +186,7 @@ function renderTrafficView() {
   const result = engine.frames({ collapseIdle: state.collapseIdle, filter: state.filter || null });
   renderTraffic(refs.trafficRows, {
     result, cursorUs: state.cursorUs, selectedId: state.selectedFrameId,
-    onSelect: selectFrame,
+    filter: state.filter || null, onSelect: selectFrame,
   });
   refs.trafficCount.textContent = state.collapseIdle && result.collapsed
     ? `${result.rows.length} shown · ${result.collapsed.hiddenFrames} hidden`

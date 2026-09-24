@@ -82,6 +82,17 @@ impl FrameField {
             FrameField::Crc => "crc",
         }
     }
+
+    /// The display name shown on the submission form. This is what the field is
+    /// called in the inspector's decode tree, which is where the learner reads
+    /// the value; `name` stays the stable answer-key key. They differ only where
+    /// the short key would not match the decode tree the learner is looking at.
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameField::Id => "reply/command code",
+            _ => self.name(),
+        }
+    }
 }
 
 /// Where one field sits in a frame's octets.

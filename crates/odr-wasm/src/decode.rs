@@ -854,7 +854,7 @@ pub fn wiegand_fields(bits: &BitVec, substituted: bool) -> Vec<Field> {
                 "Sixteen bits, sent in the clear, with nothing to defeat."
             }),
         Field::at("w_po", "Odd parity", At::Bits(25, 1), bit_str(25, 1))
-            .means("over bits 14-25")
+            .means("over bits 13-24")
             .note("Recomputed by anyone who edits the number. Parity is not integrity."),
     ]
 }

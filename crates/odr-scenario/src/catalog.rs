@@ -158,27 +158,27 @@ pub const DRILLS: &[Drill] = &[
                correct parity.",
         guidance: Guidance {
             bronze: &[
-                "Hold the tag in the reader's field. The carrier panel shows the modulation the \
-                 tag produces: 64 clocks per bit, Manchester coded.",
-                "The frame is nine header ones, then ten rows of four data bits and a row parity \
-                 bit, then four column parity bits and a stop bit. Sixty-four bits in total.",
-                "Strip the header. Read the ten rows of four bits, most significant first. That \
-                 is the 40-bit id.",
-                "Check the row and column parity. If they pass, you have read it correctly.",
-                "Submit the id.",
+                "The tag answers the reader's field on its own. Find the RF frame in the traffic \
+                 list — it is the card presenting — and select it.",
+                "The inspector demodulates it for you and puts the whole 40-bit id in the Tag ID \
+                 field of the decode tree, on the right.",
+                "An EM4100 tag carries that id as Manchester-coded bits wrapped in a header and \
+                 parity rows; the inspector has already stripped the framing, so the Tag ID field \
+                 is the number itself.",
+                "Read the Tag ID and submit it — decimal, or hex with a leading 0x.",
             ],
             silver: &[
-                "The whole id is on the carrier and nothing protects it. Demodulate, drop the \
-                 header, read the rows.",
+                "The whole id is on the tag and nothing protects it. Read it off the Tag ID field \
+                 in the inspector.",
             ],
             gold: NO_GUIDANCE,
         },
         hints: &[
-            "Manchester coding puts a transition in the middle of every bit. The direction of \
-             that transition is the bit.",
-            "Nine ones in a row cannot appear anywhere else in the frame, by construction. That \
-             is how you find the start.",
-            "Every fifth bit after the header is a parity bit, not data.",
+            "Select the RF row in the traffic list; the decode tree fills in on the right.",
+            "The Tag ID field is the whole answer — 40 bits, with the tag's header and parity \
+             already stripped away.",
+            "The submission box takes a decimal number or hex with a leading 0x; the decode tree \
+             shows the id both ways.",
         ],
         taps: NO_TAPS,
         submission: Some("the tag's 40-bit id"),
@@ -206,8 +206,9 @@ pub const DRILLS: &[Drill] = &[
                 "Brush the coil past the victim's pocket. One pass in the field is enough — the \
                  tag answers whenever it is energised and has no way to decline.",
                 "Write the capture to a blank. The blank now emits the same bit stream.",
-                "Walk to the door with the blank and present it.",
-                "Compare the two modulation traces side by side. They are identical.",
+                "Walk to the door with the blank and present it, then run.",
+                "The controller grants. Nothing in the frame the clone emits differs from the \
+                 original's, so no reader anywhere could tell the two apart.",
             ],
             silver: &[
                 "Capture the victim's field response, write it to a blank, present the blank. The \
@@ -249,8 +250,8 @@ pub const DRILLS: &[Drill] = &[
                 "Decode the block: a fixed preamble, then the 26-bit payload.",
                 "Split the payload: one leading parity bit, eight bits of facility code, sixteen \
                  bits of card number, one trailing parity bit.",
-                "Recompute both parity bits yourself — even over the first thirteen, odd over the \
-                 last thirteen — and assemble the 26 bits.",
+                "Recompute both parity bits yourself — the leading bit is even over bits 1 to 12, \
+                 the trailing bit is odd over bits 13 to 24 — and assemble the 26 bits.",
                 "Submit the facility code, the card number and the bit string, then present the \
                  card and compare.",
             ],
@@ -262,8 +263,8 @@ pub const DRILLS: &[Drill] = &[
         },
         hints: &[
             "The 44-bit air block is not the 26-bit wire frame. The reader strips the preamble.",
-            "H10301's leading parity is even over bits 1..13 and its trailing parity is odd over \
-             bits 13..25. Those two ranges overlap by one bit on purpose.",
+            "H10301's leading parity is bit 0, even over bits 1 to 12; its trailing parity is bit \
+             25, odd over bits 13 to 24. The decode tree labels both ranges the same way.",
             "If your bit string is right but your card number is not, you have the facility code \
              and card number boundary in the wrong place.",
         ],
@@ -339,16 +340,19 @@ pub const DRILLS: &[Drill] = &[
                tells a defender what they bought.",
         guidance: Guidance {
             bronze: &[
-                "Authenticate honestly first, with the key. Both ends derive the same session key \
-                 and neither of them transmits it. Look at the transcript and confirm that.",
-                "Now try the clone from 0.2: capture a field response and replay it. Note where \
-                 it stops.",
-                "Now try the replay: record one complete authentication and play it back. Note \
-                 where that stops, and why it is a different reason.",
-                "Now try 0.4's nested recovery: collect the card's nonces and check whether they \
-                 lie on a 16-bit LFSR orbit. They do not, and the engine counts how many of your \
-                 samples did.",
-                "Submit one diagnosis per attack.",
+                "This card runs real mutual authentication, so all three Module 0 attacks stop \
+                 against it. The engine has already run them — your job is to say why each one \
+                 stops, because the reason is the finding, not the failure.",
+                "The clone from 0.2 copies whatever the card emits, but a DESFire emits a fresh \
+                 response every time, so there is no static number to copy: tick 'no static \
+                 secret to copy'.",
+                "A replay needs the reader to accept a message it has seen before, but every \
+                 exchange is bound to a fresh challenge, so a recording is stale on arrival: tick \
+                 'challenge is fresh each exchange'.",
+                "0.4's nested recovery needs the card to hand over predictable keystream, but this \
+                 card's key never crosses the link and its nonces do not sit on an LFSR orbit: \
+                 tick 'key never transmitted'.",
+                "That is one diagnosis per attack — check all three and the flag is yours.",
             ],
             silver: &[
                 "Three attacks, three different reasons they stop. Name each one; the drill marks \
@@ -382,7 +386,8 @@ pub const DRILLS: &[Drill] = &[
         note: "It is here because a course that teaches only the electronic attacks leaves a \
                learner with a badly calibrated sense of where the risk is — and because a \
                defender who hardens the bus and leaves a gap under the door has bought nothing. \
-               The full text is `docs/BYPASS.md`.",
+               The four categories above are the whole of the point; the fuller write-up ships \
+               with the project source as docs/BYPASS.md.",
         guidance: Guidance {
             bronze: &[
                 "Read the four categories: the request-to-exit path, the door and its frame, the \
@@ -428,7 +433,7 @@ pub const DRILLS: &[Drill] = &[
                 "Present the card and run.",
                 "Open the captured frame. Twenty-six bits, in transmission order, most \
                  significant first.",
-                "Bit 0 is even parity over bits 1 to 13. Bit 25 is odd parity over bits 13 to 25. \
+                "Bit 0 is even parity over bits 1 to 12. Bit 25 is odd parity over bits 13 to 24. \
                  Everything between is the payload.",
                 "Bits 1 to 8 are the facility code; bits 9 to 24 are the card number. Read them \
                  as plain binary and submit.",
@@ -544,8 +549,8 @@ pub const DRILLS: &[Drill] = &[
                     from the genuine card.",
         note: "This is the class of device an ESPKey or a Tick is. It works because the reader is \
                mounted on the unsecured side of the wall and the conductors are behind it — which \
-               is `docs/BYPASS.md`'s third category, and the one place that reference section and \
-               this course touch.",
+               is drill 0.6's third category, the reader's own housing, and the one place that \
+               reference section and this course touch.",
         guidance: Guidance {
             bronze: &[
                 "Cut the implant in behind the reader and leave it transparent.",

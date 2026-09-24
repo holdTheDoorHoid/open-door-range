@@ -338,7 +338,7 @@ function wiegandFields(bits, facility, cardNumber, opts = {}) {
     { id: 'w_pe', name: 'Even parity', bitOffset: 0, bitLength: 1, value: String(bits[0]), meaning: 'over bits 1-12', note: 'One bit of parity over the first half. It catches a single flipped bit on a noisy wire. It is not a signature and it authenticates nobody.', visibility: 'clear' },
     { id: 'w_fc', name: 'Facility code', bitOffset: 1, bitLength: 8, value: fc, meaning: `${facility} (0x${hex(facility)})`, note: 'Eight bits. Shared by every badge in the building, which is why it is the field a brute-force sweep holds constant.', visibility: 'clear' },
     { id: 'w_cn', name: 'Card number', bitOffset: 9, bitLength: 16, value: cn, meaning: `${cardNumber}`, note: opts.substituted ? 'Rewritten in flight by the inline tap. The reader never emitted this number.' : 'Sixteen bits. 65,536 possibilities, sent in the clear, with nothing to defeat.', visibility: 'clear' },
-    { id: 'w_po', name: 'Odd parity', bitOffset: 25, bitLength: 1, value: String(bits[25]), meaning: 'over bits 14-25', note: 'Recomputed by anyone who edits the number. Parity is not integrity.', visibility: 'clear' },
+    { id: 'w_po', name: 'Odd parity', bitOffset: 25, bitLength: 1, value: String(bits[25]), meaning: 'over bits 13-24', note: 'Recomputed by anyone who edits the number. Parity is not integrity.', visibility: 'clear' },
   ];
 }
 
