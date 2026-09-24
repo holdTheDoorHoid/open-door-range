@@ -59,6 +59,7 @@
 //! | [`observe`] | [`Monitor`], [`Observation`] — the rule above, as a type |
 //! | [`finding`] | [`Finding`], [`Signal`], [`Evidence`], [`Report`] — what a detector says and how a learner checks it |
 //! | [`detector`] | [`Detector`], [`RuleSet`] — one rule, and a learner's answer |
+//! | [`catalog`] | [`RuleSpec`], [`RuleSetSpec`] — the selectable rules and their parameters, as data a form can draw |
 //! | [`rules`] | the eight detectors |
 //! | [`scenario`] | [`generate_day`] — a day of mixed traffic and its answer key, kept apart |
 //! | [`score`] | [`AnswerKey`], [`Score`] — true positives, false positives, time to detection |
@@ -109,6 +110,7 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+pub mod catalog;
 pub mod detector;
 pub mod error;
 pub mod finding;
@@ -117,6 +119,7 @@ pub mod rules;
 pub mod scenario;
 pub mod score;
 
+pub use catalog::{ComposedRule, ParamKind, RuleParam, RuleSetSpec, RuleSpec, PRESETS, RULES};
 pub use detector::{Detector, RuleSet};
 pub use error::{DetectError, Result};
 pub use finding::{Confidence, Evidence, Finding, FrameRef, Report, Severity, Signal};

@@ -202,7 +202,7 @@ function renderDrillView(drill) {
     renderCourseView();
     updateCourseProgress();
   }
-  renderDrill(refs.drill, { drill, band: state.band, flag, complete });
+  renderDrill(refs.drill, { drill, band: state.band, flag, complete, engine, onChange: refreshBench });
   renderSubmission(refs.drill.submit, {
     // engine.submission() is a v2 call. The reference implementation in
     // engine-mock.js is v1 and does not have it, and the site is expected to

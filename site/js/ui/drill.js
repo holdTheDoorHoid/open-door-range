@@ -1,14 +1,97 @@
 /*
- * drill.js — objective, hint on request, flag state.
+ * drill.js — objective, hint on request, flag state, and Module 5's rule
+ * builder.
  *
  * Bronze pre-places the taps and names the control to touch. Silver gives the
  * objective and hints if asked. Gold gives the objective and nothing else.
  * None of them change the bench.
+ *
+ * Module 5 is the one module whose "attack" is an analysis, so its panel
+ * carries a builder rather than a control: ui/ruleeditor.js draws the rule
+ * catalogue the engine publishes, runs the composed set, and shows the score
+ * with its reasoning. See ENGINE-API.md §13.
  */
 
 import { el, clear, fmtBig } from '../util.js';
+import { renderRuleEditor, rememberHost, resetRuleEditor } from './ruleeditor.js';
 
-export function renderDrill(refs, { drill, band, flag, complete }) {
+/* ---------------------------------------------------------------- *
+ * Module 5's rule builder
+ * ---------------------------------------------------------------- */
+
+/** The last drill id drawn, so the builder's draft is dropped when it changes. */
+let lastDrillId = null;
+
+/**
+ * The most recent way the host offered to redraw the drill panel.
+ *
+ * Running a rule set changes the flag, and the flag card is drawn by the host,
+ * not by this module. `renderDrill` prefers an `onChange` passed in props;
+ * failing that it borrows the `onStart` callback the host hands `renderTasks`,
+ * which is the same "re-read the engine and redraw" path. `startTask` with an
+ * id no task answers to is a no-op that returns `{ ok: false }` in both
+ * engines, so borrowing it costs nothing.
+ *
+ * This is a shim. See the note in ENGINE-API.md §13: the host should pass
+ * `engine` and `onChange` into `renderDrill`, and then neither of these
+ * fallbacks is used.
+ */
+let borrowedRefresh = null;
+
+/** The engine, from props if the host passes it, else the page's own handle. */
+function engineFor(props) {
+  if (props && props.engine) return props.engine;
+  return (typeof window !== 'undefined' && window.ODR && window.ODR.engine) || null;
+}
+
+/** The container the builder lives in, created once, above the flag card. */
+function ruleEditorHost(refs) {
+  const existing = document.getElementById('odr-rule-editor');
+  if (existing) return existing;
+  const host = el('div', { id: 'odr-rule-editor' });
+  const anchor = refs.flag;
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(host, anchor);
+  else if (refs.submit) refs.submit.append(host);
+  return host;
+}
+
+function drawRuleEditor(refs, props) {
+  const { drill } = props;
+  const host = document.getElementById('odr-rule-editor');
+  const wanted = !!drill && String(drill.id).startsWith('5.');
+  if (!wanted) {
+    // COLLAPSE, NEVER REMOVE applies to controls that are still affecting the
+    // simulation. A rule builder on drill 1.1 is affecting nothing, so it goes
+    // away entirely rather than folding into a line that would be a lie.
+    if (host) host.remove();
+    return;
+  }
+  if (drill.id !== lastDrillId) {
+    lastDrillId = drill.id;
+    resetRuleEditor();
+  }
+  const engine = engineFor(props);
+  const target = ruleEditorHost(refs);
+  if (!engine) {
+    // At boot the page's engine handle is published a tick after the first
+    // render. Try again once rather than drawing an empty panel forever.
+    if (!drawRuleEditor.retried) {
+      drawRuleEditor.retried = true;
+      setTimeout(() => drawRuleEditor(refs, props), 0);
+    }
+    return;
+  }
+  drawRuleEditor.retried = false;
+  const onChange = () => {
+    if (props.onChange) props.onChange();
+    else if (borrowedRefresh) borrowedRefresh('');
+  };
+  rememberHost(target, { engine, onChange });
+  renderRuleEditor(target, { engine, onChange });
+}
+
+export function renderDrill(refs, props) {
+  const { drill, band, flag, complete } = props;
   refs.id.textContent = drill ? drill.id : '';
   refs.title.textContent = drill ? drill.title : 'Free play';
   refs.summary.textContent = drill ? drill.summary : 'No drill loaded. The bench is yours — the same instrument the course drives.';
@@ -91,6 +174,9 @@ export function renderDrill(refs, { drill, band, flag, complete }) {
     refs.flag.append(el('p', { style: 'font-size:var(--fs-xs);color:var(--text-muted);margin:.4rem 0 0' },
       'Recorded complete in this browser on an earlier run. The bench as it stands now does not earn it.'));
   }
+
+  // ---- Module 5's rule builder ---------------------------------------
+  drawRuleEditor(refs, props);
 }
 
 /**
@@ -118,6 +204,9 @@ function projectedDate(remainingSeconds, projected) {
 }
 
 export function renderTasks(host, { tasks, onStart }) {
+  // Borrowed as the rule builder's "redraw the drill panel" path until the
+  // host passes one of its own. See the note above.
+  if (typeof onStart === 'function') borrowedRefresh = onStart;
   clear(host);
   for (const t of tasks) {
     const box = el('div', { class: 'task' });

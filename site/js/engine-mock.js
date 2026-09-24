@@ -11,11 +11,19 @@
  *
  *        import { createEngine } from './engine-mock.js';
  *
- * It implements ENGINE_API_VERSION 3. What it does NOT implement is the v2
+ * It implements ENGINE_API_VERSION 4. What it does NOT implement is the v2
  * submission API (§9) — the mock approximates those predicates by watching
  * which field you opened in the decode tree, which is the thing the real
  * engine could not do and the reason that API exists. The site checks for each
  * of those calls before making it, so both engines run.
+ *
+ * It DOES implement v4's rule editor (§13): ruleCatalog(), setRules() and
+ * detection(). Module 5 asks a learner to build a detection rule set, and a
+ * reference implementation that could only offer a menu would be describing a
+ * different contract. The day and the findings below are hand-written; the
+ * mechanism — composition selects rules, rules produce findings, findings are
+ * scored against a key containing benign events — is the real one, so a set
+ * that alerts on everything scores badly here too.
  *
  * If you change a shape here, change it in ../ENGINE-API.md first.
  *
@@ -27,7 +35,7 @@
  */
 
 export const ENGINE_KIND = 'mock';
-export const ENGINE_API_VERSION = 3;
+export const ENGINE_API_VERSION = 4;
 
 /* ------------------------------------------------------------------ *
  * Bytes
@@ -972,14 +980,14 @@ const MODULES = [
         summary: 'Which of the four attacks in module 3 are visible to a passive monitor at all?',
         objective: 'Classify each module 3 attack as visible or invisible to a passive monitor, and say what the observable is.',
         flagText: 'Scored on true positives and false positives against a generated day of traffic.',
-        predicate: { kind: 'diagnose' },
+        predicate: { kind: 'ruleset', need: 'complete' },
       }),
       d('5.2', 'A rule that catches the downgrade', 'gold', {
         scenario: 'osdp-downgrade',
         summary: 'Build a detection rule that catches the downgrade and does not fire on a genuine legacy reader being added to the bus.',
         objective: 'Write a rule with a true positive on the downgrade and no false positive on the legacy reader.',
         flagText: 'The rule set is scored on true positives and false positives.',
-        predicate: { kind: 'frame', frameKind: 'pdcap_downgraded' },
+        predicate: { kind: 'ruleset', need: 'downgrade' },
         hints: ['A reader that never could do crypto has always said so. A downgraded one said otherwise thirty seconds ago.'],
       }),
       d('5.3', 'Install mode in a log', 'silver', {
@@ -987,7 +995,7 @@ const MODULES = [
         summary: 'What does install mode look like in a log, and why is it usually indistinguishable from a real commissioning?',
         objective: 'Identify the frames, and say honestly what separates the attack from a technician doing their job.',
         flagText: 'Scored on true positives and false positives.',
-        predicate: { kind: 'diagnose' },
+        predicate: { kind: 'ruleset', need: 'keyset' },
       }),
     ],
   },
@@ -995,6 +1003,488 @@ const MODULES = [
 
 const DRILL_INDEX = new Map();
 for (const m of MODULES) for (const dr of m.drills) DRILL_INDEX.set(dr.id, Object.assign({ moduleId: m.id, moduleTitle: m.title, moduleNumber: m.number }, dr));
+
+/* ------------------------------------------------------------------ *
+ * Module 5 — the rule catalogue, a canned day, and a scorer
+ *
+ * ENGINE-API.md §13. Module 5's drills ask a learner to BUILD a detection
+ * rule set rather than pick one, so the contract carries three calls:
+ * ruleCatalog(), setRules() and detection().
+ *
+ * What is canned here is the DAY and the findings each rule would produce on
+ * it — hand-written, and honest about being hand-written. What is not canned
+ * is the mechanism: a composition selects rules and sets their parameters, the
+ * rules produce findings, and the findings are scored against an answer key
+ * that includes benign events. A set that alerts on everything scores badly
+ * here for the same reason it does in odr-detect — because the key contains
+ * traffic that is supposed to look like an attack and is not.
+ *
+ * The real engine derives every one of these findings by running detectors
+ * over bytes a simulated bus produced. See ENGINE-API.md §12.
+ * ------------------------------------------------------------------ */
+
+const SIGNAL_TEXT = {
+  cleartext_bus: 'this address is being talked to with no encryption and no authentication',
+  sensitive_command_in_clear: 'a command that opens a door or moves a peripheral crossed the bus unprotected',
+  default_key_in_use: 'the secure channel is keyed with the published default key',
+  null_cipher: 'secure channel is established and the payloads are not encrypted',
+  keyset_observed: 'a secure channel base key was pushed to a peripheral',
+  capability_downgrade: 'a peripheral stopped claiming AES-128 support that it previously claimed',
+  secure_channel_lost: 'an address that ran Secure Channel is now in the clear without re-handshaking',
+  device_identity_changed: 'a different device is answering at this address',
+  sequence_anomaly: 'a frame’s sequence number does not follow the cycle',
+  cadence_violation: 'a command arrived before the previous one was answered',
+  unsolicited_reply: 'a reply arrived that no command asked for',
+  duplicate_address: 'two devices answered to the same address',
+  replayed_frame: 'a byte-identical frame carrying a payload was sent twice',
+  replayed_credential: 'the same credential appeared twice, faster than a person could present it',
+  unauthenticated_wire: 'this is a two-wire link, so anything driven onto it will be believed',
+  malformed_credential: 'bits on the wire fit no known card format with valid parity',
+  traffic_pattern_exposed: 'the building’s badge-in schedule is readable from the traffic',
+};
+
+const sig = (id) => ({ id, describes: SIGNAL_TEXT[id] || '' });
+
+/** The selectable rules. Mirrors odr_detect::catalog::RULES. */
+const RULE_CATALOGUE = [
+  {
+    id: 'posture', label: 'Posture — unsecured traffic, per address', inStandard: true,
+    catches: 'a run of frames for one address carrying no security block: that peripheral’s traffic is readable and forgeable, and the door command on it is copyable.',
+    falsePositives: 'nothing benign, but it is loud by design — it reports what a link is configured to be. Drop the frame threshold to 1 or 2 and every properly secured link reports too, because a handshake’s own first frames are unsecured.',
+    signals: ['cleartext_bus', 'sensitive_command_in_clear'].map(sig),
+    params: [
+      { id: 'min_frames', label: 'Frames before a run is called', type: 'count', min: 1, max: 512, default: 8, help: 'A handshake begins in the clear, and so does the ID/CAP exchange before one. Below about eight this rule starts reporting every secured link on the bus.' },
+      { id: 'gap_us', label: 'Silence that ends a run', type: 'duration', unit: 'us', min: 100000, max: 600000000, default: 30000000, help: 'A link that went quiet is not a link that went insecure.' },
+      { id: 'max_evidence', label: 'Frames cited per finding', type: 'count', min: 1, max: 64, default: 6, help: 'A four-hour cleartext run should cite the first, the last and enough in between to show it was continuous.' },
+    ],
+  },
+  {
+    id: 'keys', label: 'Keys — the default key, and the null ciphers', inStandard: true,
+    catches: 'SCBK-D named in the clear in the handshake’s key-type byte, and SCS_15/16 frames carrying a payload: authenticated, not encrypted.',
+    falsePositives: 'an ordinary encrypted bus is full of SCS_15 frames, because an empty payload has nothing to encrypt — the rule ignores those, and a version that did not would fire on every healthy secured link.',
+    signals: ['default_key_in_use', 'null_cipher'].map(sig),
+    params: [
+      { id: 'trust_capability_claim', label: 'Believe a capability reply that admits to SCBK-D', type: 'toggle', min: 0, max: 1, default: 1, help: 'On: report the default key as soon as a REPLY_PDCAP admits to it. Off: wait for a handshake to use it.' },
+    ],
+  },
+  {
+    id: 'keyset', label: 'Keyset — a base key pushed to a peripheral', inStandard: true,
+    catches: 'CMD_KEYSET on the bus, and whether the key was recoverable from the capture. Curriculum 3.4 and 3.5 from the other chair.',
+    falsePositives: 'every commissioning, on purpose. The frame is unmistakable and its authorisation is in no frame, so the finding is ambiguous and the scorer counts it in neither precision nor recall. Drill 5.3’s whole answer.',
+    signals: ['keyset_observed'].map(sig),
+    params: [
+      { id: 'show_recovered_key', label: 'Print the recovered key in the evidence note', type: 'toggle', min: 0, max: 1, default: 1, help: 'Seeing the key written out beside the frame it came from is the lesson of curriculum 3.5. The key material is simulated.' },
+    ],
+  },
+  {
+    id: 'downgrade', label: 'Downgrade — a peripheral that stopped claiming AES-128', inStandard: true,
+    catches: 'an address that used to claim AES-128 and no longer does, and an address that ran Secure Channel and is now in the clear without re-handshaking. The rule drill 5.2 is about.',
+    falsePositives: 'with the identity check on: nothing in the day. With it off: every reader swap in the building. A reader that has never claimed AES-128 is never reported either way, which is why a legacy reader being added is not a false positive here.',
+    signals: ['capability_downgrade', 'secure_channel_lost', 'device_identity_changed'].map(sig),
+    params: [
+      { id: 'require_same_identity', label: 'Require REPLY_PDID to be unchanged', type: 'toggle', min: 0, max: 1, default: 1, help: 'On: a capability drop at an address whose reported identity also changed is a reader replacement. Off: it is reported as a downgrade — which catches an attacker who rewrote REPLY_PDID too, and alerts on every genuine reader swap. REPLY_PDID is as unauthenticated as REPLY_PDCAP, so this buys quiet, not security.' },
+      { id: 'resync_grace_us', label: 'Grace for a reader coming back', type: 'duration', unit: 'us', min: 0, max: 120000000, default: 5000000, help: 'A reader power-cycling produces a short unsecured burst before the channel returns. Shorter than the real recovery and this rule calls a reboot an attack.' },
+      { id: 'min_unsecured_run', label: 'Unsecured frames before the channel is called lost', type: 'count', min: 1, max: 256, default: 4, help: 'How many frames with no security block, at an address known to have run one, before it counts as lost rather than as a gap.' },
+    ],
+  },
+  {
+    id: 'injection', label: 'Injection — the conversation broken', inStandard: true,
+    catches: 'the two-bit sequence cycle, the command-then-reply cadence, a reply nothing asked for, and one poll drawing two different answers from one address.',
+    falsePositives: 'a retransmission, a sequence reset and a peripheral that has gone offline all look like this. A well-formed frame sent in the gap between polls is deliberately not reported at all.',
+    signals: ['sequence_anomaly', 'cadence_violation', 'unsolicited_reply', 'duplicate_address'].map(sig),
+    params: [
+      { id: 'min_command_gap_us', label: 'Two commands closer than this are not a retry', type: 'duration', unit: 'us', min: 0, max: 60000000, default: 20000, help: 'Twenty milliseconds is an order of magnitude below any realistic reply timeout. Raise it past the timeout and every retry becomes an alert.' },
+      { id: 'gap_us', label: 'Silence that resets continuity', type: 'duration', unit: 'us', min: 100000, max: 600000000, default: 30000000, help: 'A monitor that was not listening has no standing to say the next sequence number is wrong.' },
+      { id: 'max_per_kind', label: 'Findings per kind', type: 'count', min: 1, max: 256, default: 8, help: 'A thoroughly broken link should report a problem, not ten thousand of them.' },
+    ],
+  },
+  {
+    id: 'replay', label: 'Replay — a frame or a credential seen twice', inStandard: true,
+    catches: 'a reply byte-identical to an earlier one that no outstanding command asked for, and the same credential twice inside the time a person needs to present a badge twice.',
+    falsePositives: 'a person badging twice. The sequence number is two bits, so two genuine reads of the same card seconds apart are byte-for-byte identical, CRC included. Raise the human interval and an honest double badge-in becomes an alert.',
+    signals: ['replayed_frame', 'replayed_credential'].map(sig),
+    params: [
+      { id: 'frame_window_us', label: 'How far back to look for an identical frame', type: 'duration', unit: 'us', min: 1000, max: 600000000, default: 30000000, help: 'Longer sees more replays and more coincidences.' },
+      { id: 'credential_window_us', label: 'How far back to look for the same credential', type: 'duration', unit: 'us', min: 1000, max: 600000000, default: 30000000, help: 'The same as above, for the card rather than the bytes.' },
+      { id: 'human_min_us', label: 'Fastest a person can present a badge twice', type: 'duration', unit: 'us', min: 0, max: 60000000, default: 800000, help: '800 ms, and it is a claim about hands rather than about protocols. Set it above a few seconds and honest double badge-ins are reported as attacks.' },
+      { id: 'max_per_kind', label: 'Findings per kind', type: 'count', min: 1, max: 256, default: 8, help: 'A cap, so one broken link does not fill the console.' },
+    ],
+  },
+  {
+    id: 'wire', label: 'Wire — a two-wire link, and bits that fit no format', inStandard: true,
+    catches: 'the existence of a D0/D1 or clock-and-data pair, which has no authentication to check, and credential bits that fit no known format with valid parity.',
+    falsePositives: 'none worth the name. What it cannot do is more interesting: it cannot tell a replayed badge from a re-badged one, and it cannot tell which card format a frame is, because the wire does not say.',
+    signals: ['unauthenticated_wire', 'malformed_credential'].map(sig),
+    params: [
+      { id: 'gap_us', label: 'Silence that starts a new run', type: 'duration', unit: 'us', min: 100000, max: 600000000, default: 30000000, help: 'One posture finding per stretch of wire traffic.' },
+      { id: 'max_malformed', label: 'Malformed-credential findings', type: 'count', min: 1, max: 256, default: 8, help: 'A cap. A reader emitting garbage emits a lot of it.' },
+    ],
+  },
+  {
+    id: 'traffic', label: 'Traffic analysis — the schedule, through the encryption', inStandard: true,
+    catches: 'the times of every badge-in, readable with no key, because the command and reply id byte is plaintext inside Secure Channel. Curriculum 4.1’s answer.',
+    falsePositives: 'it fires on healthy buses on purpose — that is the finding. Turning on Secure Channel fixes the card numbers and does not fix this.',
+    signals: ['traffic_pattern_exposed'].map(sig),
+    params: [
+      { id: 'min_events', label: 'Presentations before a schedule is a pattern', type: 'count', min: 1, max: 512, default: 3, help: 'One badge-in is not a pattern. Three is a shift.' },
+      { id: 'max_listed', label: 'Times listed in the note', type: 'count', min: 1, max: 256, default: 12, help: 'How many presentation times to write out in the evidence.' },
+    ],
+  },
+];
+
+const RULE_BY_ID = new Map(RULE_CATALOGUE.map((r) => [r.id, r]));
+
+const RULE_PRESETS = [
+  { id: 'empty', label: 'Nothing at all — the honest floor', help: 'No rules. It catches nothing and it cries wolf about nothing, which is the floor every other score should be read against.' },
+  { id: 'standard', label: 'The standard set — the worked answer', help: 'All eight rules at their default tuning. Read its score with suspicion: the answer key and these detectors were written by the same hand.' },
+  { id: 'strict', label: 'Strict downgrade — catches more, cries wolf', help: 'Posture, keys, keyset and the downgrade rule with its identity check turned off. It catches the attacker who rewrote REPLY_PDID as well, and it alerts on every genuine reader swap.' },
+];
+
+const S = 1_000_000;
+
+/** The day the rule set is scored against. Times are the episode spans. */
+const MOCK_EPISODES = [
+  { id: 'secure_baseline', startUs: 0, endUs: 30 * S, describes: 'a healthy bus under a site key; establishes what address 0x01 normally claims' },
+  { id: 'reader_power_cycle', startUs: 90 * S, endUs: 120 * S, describes: 'benign: the reader reboots and the link resynchronises, which looks like a sequence attack and like a lost secure channel' },
+  { id: 'legacy_reader_added', startUs: 180 * S, endUs: 210 * S, describes: 'benign: a genuinely legacy reader joins the bus at a new address and cannot do crypto, which looks exactly like a downgrade to a naive rule' },
+  { id: 'commissioning', startUs: 270 * S, endUs: 300 * S, describes: 'ambiguous: an installer pushes a site key, which is byte-for-byte what an attacker in install mode would do' },
+  { id: 'reader_replaced', startUs: 360 * S, endUs: 390 * S, describes: 'benign: a reader is swapped for a legacy model at the same address, dropping the AES claim without anybody attacking anything' },
+  { id: 'cleartext_bus', startUs: 450 * S, endUs: 480 * S, describes: 'a bus with no Secure Channel at all, containing a person badging twice' },
+  { id: 'downgrade', startUs: 540 * S, endUs: 570 * S, describes: 'attack: an inline implant rewrites the capability reply so the controller talks in the clear to a reader that can do better' },
+  { id: 'bus_replay', startUs: 630 * S, endUs: 660 * S, describes: 'attack: a captured card read is put back on the bus verbatim' },
+  { id: 'wiegand_door', startUs: 720 * S, endUs: 750 * S, describes: 'a two-wire door: one replayed credential among genuine ones, on a link with no authentication to check' },
+];
+
+/** The answer key. Built from the scenario script, never from the findings. */
+const MOCK_EXPECTED = [
+  { signal: 'traffic_pattern_exposed', tUs: 12 * S, windowUs: 60 * S, verdict: 'weakness', label: 'the badge-in schedule is readable from the traffic although the payloads are encrypted' },
+  { signal: 'cleartext_bus', tUs: 181 * S, windowUs: 30 * S, verdict: 'weakness', label: 'the legacy reader at 0x02 is talked to in the clear, on a bus that is otherwise secured' },
+  { signal: 'default_key_in_use', tUs: 271 * S, windowUs: 30 * S, verdict: 'weakness', label: 'the reader arrived on SCBK-D, so the channel that carried the site key was keyed with a published key' },
+  { signal: 'keyset_observed', tUs: 278 * S, windowUs: 30 * S, verdict: 'ambiguous', label: 'a CMD_KEYSET pushed the site key; the wire cannot say whether it was authorised' },
+  { signal: 'device_identity_changed', tUs: 364 * S, windowUs: 30 * S, verdict: 'ambiguous', label: 'REPLY_PDID at 0x04 reports a different device; the wire cannot say whether the swap was authorised' },
+  { signal: 'cleartext_bus', tUs: 451 * S, windowUs: 30 * S, verdict: 'weakness', label: 'no Secure Channel at all on the bus at 0x05' },
+  { signal: 'sensitive_command_in_clear', tUs: 452 * S, windowUs: 30 * S, verdict: 'weakness', label: 'the CMD_OUT that opens the door crosses the bus unprotected and can simply be copied' },
+  { signal: 'capability_downgrade', tUs: 544 * S, windowUs: 30 * S, verdict: 'attack', label: 'the reader at 0x01 stopped claiming AES-128 it has claimed all day, with the same reported identity' },
+  { signal: 'secure_channel_lost', tUs: 545 * S, windowUs: 30 * S, verdict: 'attack', label: 'an address that has run Secure Channel is now carrying card reads in the clear' },
+  { signal: 'duplicate_address', tUs: 640 * S, windowUs: 30 * S, verdict: 'attack', label: 'the played-back frame is a second answer to a poll the real reader had already answered' },
+  { signal: 'replayed_frame', tUs: 634 * S, windowUs: 30 * S, verdict: 'attack', label: 'a byte-identical card-read frame appeared again, with a conversation in between' },
+  { signal: 'unauthenticated_wire', tUs: 720 * S, windowUs: 30 * S, verdict: 'weakness', label: 'a D0/D1 pair: nothing on it is authenticated, so anything driven onto it is believed' },
+];
+
+/** The things in the day that look like attacks and are not. */
+const MOCK_BENIGN = [
+  { tUs: 90 * S, durationUs: 30 * S, label: 'the reader at 0x01 power-cycled and the link resynchronised', looksLike: 'secure_channel_lost' },
+  { tUs: 180 * S, durationUs: 30 * S, label: 'a genuinely legacy reader was added at 0x02: it has never claimed AES-128, so it has not been downgraded', looksLike: 'capability_downgrade' },
+  { tUs: 270 * S, durationUs: 30 * S, label: 'an installer commissioned the door at 0x03', looksLike: 'keyset_observed' },
+  { tUs: 360 * S, durationUs: 30 * S, label: 'a reader was replaced with a legacy model at the same address: the AES-128 claim disappears without anybody attacking anything', looksLike: 'capability_downgrade' },
+  { tUs: 460 * S, durationUs: 10 * S, label: 'a person badged twice on the cleartext bus, four seconds apart', looksLike: 'replayed_credential' },
+];
+
+/** Cite a frame, the way the inspector renders one. */
+function citeFrame(index, tUs, bytes, summary) {
+  return {
+    index, tUs, summary,
+    bytes: bytes.slice(),
+    hex: bytes.map((x) => hex(x)).join(' '),
+  };
+}
+
+const PDCAP_LEGACY = [0x53, 0x01, 0x0e, 0x00, 0x04, 0x46, 0x01, 0x01, 0x01, 0x00, 0x00];
+const PDCAP_AES = [0x53, 0x01, 0x0e, 0x00, 0x04, 0x46, 0x09, 0x01, 0x01, 0x00, 0x00];
+const RAW_READ = [0x53, 0x01, 0x10, 0x00, 0x06, 0x50, 0x00, 0x01, 0x1a, 0x00, 0x15, 0x60, 0x19];
+const CMD_OUT = [0x53, 0x05, 0x0a, 0x00, 0x04, 0x68, 0x00, 0x01, 0x14, 0x00];
+const KEYSET = [0x53, 0x03, 0x18, 0x00, 0x06, 0x75, 0x01, 0x10, 0x30, 0x31, 0x32, 0x33];
+
+/**
+ * What each rule concludes about this day, and under what tuning.
+ *
+ * `when` is the whole point: a parameter that is offered and changes nothing is
+ * worse than a parameter that is not offered.
+ */
+const MOCK_FINDINGS = [
+  // posture
+  { rule: 'posture', signal: 'cleartext_bus', tUs: 182 * S, severity: 'high', confidence: 'certain',
+    note: 'address 0x02: 41 consecutive frames over 8.2 s carried no security block, so nothing on this link is encrypted or authenticated. 2 of them report a credential, in the clear. Nothing here is an attack; this is what the link is configured to be.',
+    frames: [citeFrame(812, 181 * S, PDCAP_LEGACY, 'PD->ACU REPLY_PDCAP (no AES-128 claimed)'), citeFrame(840, 182 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits, in the clear')] },
+  { rule: 'posture', signal: 'cleartext_bus', tUs: 452 * S, severity: 'high', confidence: 'certain',
+    note: 'address 0x05: 118 consecutive frames over 27.4 s carried no security block. 4 of them report a credential, in the clear.',
+    frames: [citeFrame(2110, 451 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits, in the clear')] },
+  { rule: 'posture', signal: 'sensitive_command_in_clear', tUs: 455 * S, severity: 'critical', confidence: 'certain',
+    note: 'address 0x05: CMD_OUT — the command that fires the strike — crossed the bus with no security block. Anything on the pair can copy it.',
+    frames: [citeFrame(2160, 455 * S, CMD_OUT, 'ACU->PD CMD_OUT, no security block')] },
+  { rule: 'posture', signal: 'cleartext_bus', tUs: 2 * S, severity: 'high', confidence: 'certain',
+    when: (p) => p.min_frames <= 3,
+    note: 'address 0x01: 3 consecutive frames with no security block. These are the ID/CAP exchange and the first handshake frame of a perfectly healthy secured link — which is what a threshold this low reports.',
+    frames: [citeFrame(4, 1 * S, PDCAP_AES, 'PD->ACU REPLY_PDCAP claiming AES-128')] },
+  { rule: 'posture', signal: 'cleartext_bus', tUs: 92 * S, severity: 'high', confidence: 'certain',
+    when: (p) => p.min_frames <= 3,
+    note: 'address 0x01: 3 consecutive frames with no security block, during the reader’s reboot. The channel comes back four frames later.',
+    frames: [citeFrame(410, 92 * S, PDCAP_AES, 'PD->ACU REPLY_PDCAP claiming AES-128')] },
+
+  // keys
+  { rule: 'keys', signal: 'default_key_in_use', tUs: 272 * S, severity: 'critical', confidence: 'certain',
+    note: 'address 0x03: the handshake’s security block names key type 0x00, which is SCBK-D — the published default. Everything derived from it is derivable by anyone with the capture.',
+    frames: [citeFrame(1250, 272 * S, [0x53, 0x03, 0x1a, 0x00, 0x0e, 0x02, 0x11, 0x00, 0x76], 'ACU->PD osdp_CHLNG, SCS_11, key type SCBK-D')] },
+
+  // keyset
+  { rule: 'keyset', signal: 'keyset_observed', tUs: 278 * S, severity: 'critical', confidence: 'ambiguous',
+    note: 'address 0x03: a CMD_KEYSET crossed the bus inside a MAC-only security block (SCS_15), which authenticates and does not encrypt, so the key crossed as plaintext. Whether this was an installer commissioning a door or an attacker in install mode is not in any frame — OSDP has no notion of who a controller is, and the only thing separating the two is whether an installer was booked.',
+    frames: [citeFrame(1288, 278 * S, KEYSET, 'ACU->PD CMD_KEYSET, SCS_15, 16-byte key in the clear')] },
+
+  // downgrade
+  { rule: 'downgrade', signal: 'capability_downgrade', tUs: 545 * S, severity: 'critical', confidence: 'probable',
+    note: 'address 0x01: this capability reply does not claim AES-128, and the reply at 1.004 s from the same address did. Secure Channel has been observed established at this address, so the capability was not merely claimed — it was used. REPLY_PDID has reported the same vendor, model and serial throughout, so a reader replacement does not explain it. The capability exchange is unauthenticated and happens before any key material exists, which is why this is probable rather than certain: nothing on the wire proves the earlier reply was not the forged one.',
+    frames: [citeFrame(4, 1 * S, PDCAP_AES, 'PD->ACU REPLY_PDCAP claiming AES-128'), citeFrame(2530, 545 * S, PDCAP_LEGACY, 'PD->ACU REPLY_PDCAP, AES-128 claim absent')] },
+  { rule: 'downgrade', signal: 'secure_channel_lost', tUs: 550 * S, severity: 'high', confidence: 'probable',
+    when: (p) => p.min_unsecured_run <= 6,
+    note: 'address 0x01: 9 consecutive frames with no security block, spanning 4.8 s, at an address where Secure Channel has been observed established. No handshake frame appears in the run, so this is not a resynchronisation. The run includes a credential report in the clear.',
+    frames: [citeFrame(2560, 548 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits, in the clear'), citeFrame(2590, 550 * S, CMD_OUT, 'ACU->PD CMD_OUT, no security block')] },
+  { rule: 'downgrade', signal: 'device_identity_changed', tUs: 364 * S, severity: 'info', confidence: 'certain',
+    note: 'address 0x04: REPLY_PDID now reports vendor [00, 06, 8e] model 2 serial [11, 27, 00, 3a], which is not the device that was answering here before. Usually a reader was replaced. REPLY_PDID is unauthenticated, so an attacker already rewriting the capability reply can rewrite this one too — a changed identity is a reason to stop calling a capability drop an attack, not evidence that it was not one.',
+    frames: [citeFrame(1700, 364 * S, [0x53, 0x04, 0x14, 0x00, 0x04, 0x45, 0x00, 0x06, 0x8e, 0x02], 'PD->ACU REPLY_PDID, new vendor and serial')] },
+  { rule: 'downgrade', signal: 'capability_downgrade', tUs: 366 * S, severity: 'high', confidence: 'probable',
+    when: (p) => p.require_same_identity === 0,
+    note: 'address 0x04: this capability reply does not claim AES-128, and an earlier reply from the same address did. The identity check is OFF, so the fact that REPLY_PDID also changed was not allowed to explain it.',
+    frames: [citeFrame(1702, 366 * S, PDCAP_LEGACY, 'PD->ACU REPLY_PDCAP, AES-128 claim absent')] },
+  { rule: 'downgrade', signal: 'secure_channel_lost', tUs: 372 * S, severity: 'high', confidence: 'probable',
+    when: (p) => p.require_same_identity === 0,
+    note: 'address 0x04: 11 unsecured frames at an address that has run Secure Channel. With the identity check off, the swap does not reset the premise, so the replacement reader’s ordinary traffic is read as a channel that was lost.',
+    frames: [citeFrame(1740, 372 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits, in the clear')] },
+  { rule: 'downgrade', signal: 'secure_channel_lost', tUs: 95 * S, severity: 'high', confidence: 'probable',
+    when: (p) => p.resync_grace_us < 4_000_000,
+    note: 'address 0x01: 5 unsecured frames spanning 3.9 s at an address that has run Secure Channel. A reader power-cycling recovers well inside 5 s; with the grace set below that, this reboot is reported as a lost channel.',
+    frames: [citeFrame(412, 95 * S, PDCAP_AES, 'PD->ACU REPLY_PDCAP claiming AES-128 (the reader is coming back)')] },
+
+  // injection
+  { rule: 'injection', signal: 'duplicate_address', tUs: 640 * S, severity: 'high', confidence: 'probable',
+    note: 'address 0x09: one poll drew two different replies. Either two devices are configured to the same address or something is answering for one that is not it.',
+    frames: [citeFrame(3010, 640 * S, RAW_READ, 'PD->ACU REPLY_RAW (the real reader)'), citeFrame(3011, 640 * S, RAW_READ, 'PD->ACU REPLY_RAW (a second answer to the same poll)')] },
+  { rule: 'injection', signal: 'sequence_anomaly', tUs: 96 * S, severity: 'medium', confidence: 'probable',
+    when: (p) => p.gap_us > 60_000_000,
+    note: 'address 0x01: the sequence number restarted at 0 rather than following the 1,2,3 cycle. With the continuity memory set this long, the silence while the reader rebooted was not allowed to reset it — so a power cycle reads as a sequence attack.',
+    frames: [citeFrame(420, 96 * S, [0x53, 0x01, 0x08, 0x00, 0x00, 0x60], 'ACU->PD POLL, sequence 0')] },
+  { rule: 'injection', signal: 'cadence_violation', tUs: 20 * S, severity: 'medium', confidence: 'probable',
+    when: (p) => p.min_command_gap_us > 5_000_000,
+    note: 'address 0x01: a second command arrived 50 ms after the first with no reply between them. At this threshold, the controller’s ordinary polling cadence is being read as an injection.',
+    frames: [citeFrame(300, 20 * S, [0x53, 0x01, 0x08, 0x00, 0x02, 0x60], 'ACU->PD POLL')] },
+
+  // replay
+  { rule: 'replay', signal: 'replayed_frame', tUs: 641 * S, severity: 'high', confidence: 'probable',
+    note: 'address 0x09: a byte-identical card-read frame appeared again seven seconds later, and nothing asked for it — the poll it should be answering had already been answered. Two genuine reads of the same card can be byte-identical, because the sequence number is only two bits; what makes this a replay is the conversation, not the bytes.',
+    frames: [citeFrame(2980, 634 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits'), citeFrame(3011, 641 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits, identical, unsolicited')] },
+  { rule: 'replay', signal: 'replayed_credential', tUs: 462 * S, severity: 'high', confidence: 'possible',
+    when: (p) => p.human_min_us >= 4_000_000,
+    note: 'address 0x05: the same credential appeared twice, four seconds apart. That is well inside the interval this rule has been told a person cannot manage — which is a claim about hands, not about protocols. A turnstile, a mantrap and a loading dock all behave differently.',
+    frames: [citeFrame(2200, 458 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits'), citeFrame(2240, 462 * S, RAW_READ, 'PD->ACU REPLY_RAW 26 bits, same credential')] },
+
+  // wire
+  { rule: 'wire', signal: 'unauthenticated_wire', tUs: 722 * S, severity: 'high', confidence: 'certain',
+    note: 'a D0/D1 pair carrying 4 credential presentations. There is no authentication of any kind on this link — no sequence number, no CRC and no conversation — so anything driven onto it is believed. A replayed badge and a re-badged badge are the same bits.',
+    frames: [citeFrame(3400, 722 * S, [0x1a, 0x00, 0x15, 0x60], 'wire 26 bits, H10301 facility 42 card 24601')] },
+
+  // traffic
+  { rule: 'traffic', signal: 'traffic_pattern_exposed', tUs: 25 * S, severity: 'medium', confidence: 'certain',
+    when: (p) => p.min_events <= 12,
+    note: '14 credential presentations over 12 minutes, 9 of them with encrypted payloads. The card numbers in those are not readable. The times are, because the reply id byte sits outside the encrypted payload: REPLY_RAW is 0x50 on the wire whether or not what follows it is ciphertext. Secure Channel bought confidentiality of the credential and nothing at all of the schedule.',
+    frames: [citeFrame(120, 8 * S, RAW_READ, 'PD->ACU REPLY_RAW, SCS_18 (payload sealed, id byte in the clear)')] },
+];
+
+/** A rule at its defaults. */
+function defaultParams(rule) {
+  const out = {};
+  for (const p of rule.params) out[p.id] = p.default;
+  return out;
+}
+
+/** Parse a preset name or a composition. Mirrors RuleSetSpec::parse. */
+function parseRuleSet(text) {
+  const trimmed = String(text == null ? '' : text).trim();
+  if (trimmed === 'empty') return { name: 'nothing at all', rules: [] };
+  if (trimmed === 'standard') {
+    return {
+      name: 'standard',
+      rules: RULE_CATALOGUE.map((r) => ({ id: r.id, params: defaultParams(r) })),
+    };
+  }
+  if (trimmed === 'strict') {
+    const rules = ['posture', 'keys', 'keyset', 'downgrade']
+      .map((id) => ({ id, params: defaultParams(RULE_BY_ID.get(id)) }));
+    rules[3].params.require_same_identity = 0;
+    return { name: 'strict downgrade', rules };
+  }
+  const spec = { name: 'composed', rules: [] };
+  if (!trimmed) return spec;
+  for (const entry of trimmed.split(';')) {
+    const part = entry.trim();
+    if (!part) continue;
+    const colon = part.indexOf(':');
+    const ruleId = (colon < 0 ? part : part.slice(0, colon)).trim();
+    const rule = RULE_BY_ID.get(ruleId);
+    if (!rule) throw new Error(`no rule called "${ruleId}"`);
+    if (spec.rules.some((r) => r.id === ruleId)) continue;
+    const params = defaultParams(rule);
+    if (colon >= 0) {
+      for (const assignment of part.slice(colon + 1).split(',')) {
+        const a = assignment.trim();
+        if (!a) continue;
+        const eq = a.indexOf('=');
+        if (eq < 0) throw new Error(`"${a}" is not a parameter assignment; write name=value`);
+        const paramId = a.slice(0, eq).trim();
+        const p = rule.params.find((x) => x.id === paramId);
+        if (!p) throw new Error(`rule "${ruleId}" has no parameter "${paramId}"`);
+        const raw = a.slice(eq + 1).trim();
+        if (!/^\d+$/.test(raw)) throw new Error(`${ruleId}.${paramId} was given "${raw}", which is not a whole number`);
+        const value = Number(raw);
+        if (value < p.min || value > p.max) throw new Error(`${ruleId}.${paramId} accepts ${p.min}..=${p.max}, not ${value}`);
+        params[paramId] = value;
+      }
+    }
+    spec.rules.push({ id: ruleId, params });
+  }
+  spec.rules.sort((a, b) => RULE_CATALOGUE.findIndex((r) => r.id === a.id) - RULE_CATALOGUE.findIndex((r) => r.id === b.id));
+  const preset = matchingPreset(spec);
+  if (preset) spec.name = preset === 'empty' ? 'nothing at all' : (preset === 'strict' ? 'strict downgrade' : 'standard');
+  return spec;
+}
+
+/** One line of text, defaults omitted. Mirrors RuleSetSpec::encode. */
+function encodeRuleSet(spec) {
+  return spec.rules.map((r) => {
+    const rule = RULE_BY_ID.get(r.id);
+    const changed = rule.params
+      .filter((p) => r.params[p.id] !== p.default)
+      .map((p) => `${p.id}=${r.params[p.id]}`);
+    return changed.length ? `${r.id}:${changed.join(',')}` : r.id;
+  }).join(';');
+}
+
+function sameRuleSet(a, b) {
+  if (a.rules.length !== b.rules.length) return false;
+  return a.rules.every((r, i) => {
+    const o = b.rules[i];
+    return r.id === o.id && Object.keys(r.params).every((k) => r.params[k] === o.params[k]);
+  });
+}
+
+function matchingPreset(spec) {
+  for (const p of RULE_PRESETS) {
+    const preset = p.id === 'empty' ? { rules: [] }
+      : p.id === 'standard' ? parseRuleSet('standard')
+        : parseRuleSet('strict');
+    if (sameRuleSet(spec, preset)) return p.id;
+  }
+  return null;
+}
+
+function episodeAt(tUs) {
+  const e = MOCK_EPISODES.find((x) => tUs >= x.startUs && tUs <= x.endUs);
+  return e ? { id: e.id, describes: e.describes } : null;
+}
+
+/** Run the composed set over the canned day. */
+function runRuleSet(spec) {
+  const out = [];
+  for (const chosen of spec.rules) {
+    for (const f of MOCK_FINDINGS) {
+      if (f.rule !== chosen.id) continue;
+      if (f.when && !f.when(chosen.params)) continue;
+      out.push({
+        signal: f.signal, describes: SIGNAL_TEXT[f.signal] || '',
+        tUs: f.tUs, severity: f.severity, confidence: f.confidence,
+        note: f.note, frames: f.frames, frameCount: f.frames.length,
+        episode: episodeAt(f.tUs),
+      });
+    }
+  }
+  // The canonical order odr-detect's Report::new imposes.
+  out.sort((a, b) => a.tUs - b.tUs || a.signal.localeCompare(b.signal));
+  return out;
+}
+
+/** Score a report against the key. Mirrors AnswerKey::score. */
+function scoreRuleSet(spec) {
+  const findings = runRuleSet(spec);
+  const used = findings.map(() => false);
+  const caught = [];
+  const ambiguousHits = [];
+  const missed = [];
+
+  for (const e of MOCK_EXPECTED) {
+    const i = findings.findIndex((f, idx) => !used[idx]
+      && f.signal === e.signal && f.tUs >= e.tUs && f.tUs <= e.tUs + e.windowUs);
+    if (i < 0) {
+      if (e.verdict !== 'ambiguous') missed.push({ signal: e.signal, describes: SIGNAL_TEXT[e.signal], label: e.label, verdict: e.verdict, tUs: e.tUs, episode: episodeAt(e.tUs) });
+      continue;
+    }
+    used[i] = true;
+    const hit = Object.assign({}, findings[i], {
+      label: e.label, verdict: e.verdict, expectedUs: e.tUs,
+      latencyUs: Math.max(0, findings[i].tUs - e.tUs),
+    });
+    if (e.verdict === 'ambiguous') ambiguousHits.push(hit); else caught.push(hit);
+  }
+
+  const falsePositives = findings
+    .filter((_, i) => !used[i])
+    .map((f) => {
+      const b = MOCK_BENIGN.find((x) => f.tUs >= x.tUs && f.tUs <= x.tUs + x.durationUs);
+      return Object.assign({}, f, { benign: b ? b.label : null });
+    });
+
+  const scored = caught.length + falsePositives.length;
+  const total = caught.length + missed.length;
+  const latencies = caught.map((h) => h.latencyUs);
+  return {
+    ran: true,
+    ruleSet: selectionOf(spec),
+    evidenceChecks: true,
+    score: {
+      findings: findings.length,
+      truePositives: caught.length,
+      falsePositives: falsePositives.length,
+      falseNegatives: missed.length,
+      ambiguous: ambiguousHits.length,
+      precisionPct: scored === 0 ? 100 : Math.floor((caught.length * 100) / scored),
+      recallPct: total === 0 ? 100 : Math.floor((caught.length * 100) / total),
+      quietOnBenign: falsePositives.every((f) => f.benign === null),
+      worstTimeToDetectUs: latencies.length ? Math.max(...latencies) : 0,
+      meanTimeToDetectUs: latencies.length ? Math.floor(latencies.reduce((a, x) => a + x, 0) / latencies.length) : 0,
+    },
+    caught,
+    ambiguousHits,
+    missed,
+    falsePositives,
+    benign: MOCK_BENIGN.map((b) => Object.assign({}, b, { episode: episodeAt(b.tUs) })),
+    episodes: MOCK_EPISODES.map((e) => ({ id: e.id, describes: e.describes, startUs: e.startUs, endUs: e.endUs })),
+    listCap: 60,
+    error: null,
+    summary: '',
+  };
+}
+
+function selectionOf(spec) {
+  const signals = [];
+  for (const r of spec.rules) {
+    for (const s of RULE_BY_ID.get(r.id).signals) {
+      if (!signals.some((x) => x.id === s.id)) signals.push(s);
+    }
+  }
+  return {
+    text: encodeRuleSet(spec),
+    name: spec.name,
+    preset: matchingPreset(spec),
+    ruleCount: spec.rules.length,
+    signals,
+  };
+}
+
+/** Did this signal fire inside this episode? */
+function firedDuring(detection, signal, episodeId) {
+  const ep = MOCK_EPISODES.find((e) => e.id === episodeId);
+  if (!ep) return false;
+  const all = detection.caught.concat(detection.ambiguousHits, detection.falsePositives);
+  return all.some((f) => f.signal === signal && f.tUs >= ep.startUs && f.tUs <= ep.endUs);
+}
 
 /* ------------------------------------------------------------------ *
  * Bench configuration
@@ -1173,6 +1663,10 @@ class MockEngine {
     this._scenario = null;
     this._frameIndex = new Map();
     this._tapSeq = 0;
+    // Module 5's answer: the rule set the learner composed, which the engine
+    // RUNS rather than compares. The floor is nothing at all.
+    this._rules = parseRuleSet('empty');
+    this._ruleError = null;
     this.loadDrill('1.1', 'bronze');
   }
 
@@ -1225,6 +1719,8 @@ class MockEngine {
     if (band) this.session.band = band;
     this.observed.clear();
     this.taps = [];
+    this._rules = parseRuleSet('empty');
+    this._ruleError = null;
     this._applyScenarioDefaults(dr);
     this.tasks = [];
     if (dr.predicate.kind === 'task') this._startTask(dr.predicate.taskId);
@@ -1306,6 +1802,9 @@ class MockEngine {
     const fromPredicate = (p) => {
       if (!p) return null;
       if (p.kind === 'tap') return p.mode;
+      // A Module 5 drill is scored from a capture, so the weakest tap that
+      // makes it reachable is a passive probe on the bus.
+      if (p.kind === 'ruleset') return 'sniff';
       if (p.kind === 'all') return p.of.map(fromPredicate).find(Boolean) || null;
       return null;
     };
@@ -1669,6 +2168,8 @@ class MockEngine {
           ? { ok: true, evidence: [task.evidence], outstanding: [] }
           : { ok: false, evidence: [], outstanding: ['Start the attack from the drill panel.'] };
       }
+      case 'ruleset':
+        return this._evaluateRuleSet(p.need);
       case 'diagnose':
         return this.observed.has('diagnosis')
           ? { ok: true, evidence: ['Diagnosis recorded and scored against the engine\'s own account of why each attack stopped.'], outstanding: [] }
@@ -1676,6 +2177,109 @@ class MockEngine {
       default:
         return { ok: false, evidence: [], outstanding: [] };
     }
+  }
+
+  /* ---- §13 Module 5: the rule editor ---- */
+
+  /** The parts a rule set is built from, and what is selected right now. */
+  ruleCatalog() {
+    const chosen = new Map(this._rules.rules.map((r) => [r.id, r.params]));
+    return {
+      rules: RULE_CATALOGUE.map((r) => ({
+        id: r.id, label: r.label, catches: r.catches,
+        falsePositives: r.falsePositives, inStandard: r.inStandard,
+        selected: chosen.has(r.id),
+        signals: r.signals.map((x) => ({ ...x })),
+        params: r.params.map((p) => {
+          const value = chosen.has(r.id) ? chosen.get(r.id)[p.id] : p.default;
+          return {
+            id: p.id, label: p.label, help: p.help, type: p.type,
+            min: p.min, max: p.max, default: p.default,
+            value, changed: value !== p.default,
+            ...(p.unit ? { unit: p.unit } : {}),
+          };
+        }),
+      })),
+      presets: RULE_PRESETS.map((p) => ({
+        ...p, text: encodeRuleSet(parseRuleSet(p.id)),
+      })),
+      selection: selectionOf(this._rules),
+    };
+  }
+
+  /**
+   * Compose the rule set and run it.
+   *
+   * A refusal changes nothing and comes back in words: a learner whose rule was
+   * silently dropped would be scored on a set they did not build.
+   */
+  setRules(text) {
+    try {
+      this._rules = parseRuleSet(text);
+      this._ruleError = null;
+      this._bump();
+      return { ok: true, error: null, selection: selectionOf(this._rules) };
+    } catch (e) {
+      this._ruleError = String(e.message || e);
+      this._bump();
+      return { ok: false, error: this._ruleError, selection: selectionOf(this._rules) };
+    }
+  }
+
+  /** The score, with its reasoning. `null` outside Module 5. */
+  detection() {
+    const s = this.session;
+    if (!s || !s.drillId || !s.drillId.startsWith('5.')) return null;
+    const probeOnLink = this.taps.some((t) => t.linkId === 'reader-controller');
+    // A probe that is not clipped on sees nothing, so a rule set has nothing
+    // to run against: the honest floor, not the learner's set.
+    const spec = probeOnLink ? this._rules : parseRuleSet('empty');
+    const d = scoreRuleSet(spec);
+    d.ran = probeOnLink && spec.rules.length > 0;
+    d.probeOnLink = probeOnLink;
+    d.error = this._ruleError;
+    d.summary = `${d.score.findings} findings; ${d.score.truePositives} true positive(s), `
+      + `${d.score.falsePositives} false positive(s), ${d.score.falseNegatives} missed, `
+      + `${d.score.ambiguous} ambiguous; precision ${d.score.precisionPct}%, recall ${d.score.recallPct}%`;
+    return d;
+  }
+
+  /** Module 5's three flag predicates, over the scored rule set. */
+  _evaluateRuleSet(need) {
+    const d = this.detection();
+    if (!d || !d.probeOnLink) {
+      return { ok: false, evidence: [], outstanding: ['Clip a passive probe on the reader → controller link; a monitor that is not there sees nothing.'] };
+    }
+    if (!d.ran) {
+      return { ok: false, evidence: [], outstanding: ['Build a rule set in the rule builder and run it against the generated day.'] };
+    }
+    const evidence = [d.summary];
+    const outstanding = [];
+    if (need === 'complete') {
+      if (d.missed.length) outstanding.push(`${d.missed.length} attack(s) in the key were missed: ${d.missed.map((m) => m.label).join(', ')}`);
+      if (!d.score.quietOnBenign) outstanding.push(`${d.falsePositives.filter((f) => f.benign).length} false positive(s) on benign traffic`);
+    }
+    if (need === 'downgrade') {
+      if (!firedDuring(d, 'capability_downgrade', 'downgrade')) {
+        outstanding.push('No capability downgrade was reported during the downgrade episode: a rule needs a prior claim from the same address to compare against.');
+      }
+      for (const benign of ['legacy_reader_added', 'reader_replaced']) {
+        if (firedDuring(d, 'capability_downgrade', benign)) {
+          outstanding.push(`A downgrade was reported during the ${benign} episode, which is benign.`);
+        }
+      }
+      if (!d.score.quietOnBenign) outstanding.push('Something on the benign traffic was called an attack.');
+    }
+    if (need === 'keyset') {
+      if (!firedDuring(d, 'keyset_observed', 'commissioning')) {
+        outstanding.push('No keyset was reported during the commissioning episode.');
+      } else if (!d.ambiguousHits.some((h) => h.signal === 'keyset_observed')) {
+        outstanding.push('The keyset was reported with a confidence the link does not permit; nothing in any frame says whether it was authorised.');
+      } else {
+        evidence.push('The keyset was reported as undecidable, and the scorer counted it as ambiguous — excluded from both precision and recall, which is exactly the position a defender is in.');
+      }
+    }
+    return { ok: outstanding.length === 0, evidence, outstanding };
   }
 
   /* ---- long-running tasks (drills 1.5 and 4.2) ---- */

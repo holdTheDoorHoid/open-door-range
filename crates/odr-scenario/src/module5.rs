@@ -6,11 +6,17 @@
 //!
 //! # What the learner actually submits
 //!
-//! A rule set. `odr-detect`'s [`RuleSet`] is a list of
-//! trait objects, so it cannot be a plain value inside
-//! [`Submission`](crate::Submission) — the learner's rule set is run by the
-//! caller and what arrives here is its [`Report`]. That is not a weakening:
-//! a report cites the frames that justify every finding and
+//! **A rule set they composed.** `docs/CURRICULUM.md` drill 5.2 says *build* a
+//! detection rule, and [`RuleSetSpec`] is the buildable shape: a selection of
+//! `odr-detect`'s rules with their parameters set, which
+//! [`run_composed`] builds and runs against the same generated day. A learner
+//! starting from `RuleSetSpec::standard()` and turning one toggle off is doing
+//! exactly what the drill asks, and is scored on what that costs.
+//!
+//! `odr-detect`'s [`RuleSet`] itself is a list of trait objects, so it cannot
+//! be a plain value inside [`Submission`](crate::Submission) — a caller that
+//! ran a rule set elsewhere hands over its [`Report`] instead. That is not a
+//! weakening: a report cites the frames that justify every finding and
 //! [`Report::evidence_checks`](odr_detect::Report::evidence_checks) re-reads
 //! them against the capture, so a report full of invented findings fails the
 //! citation check before it ever reaches the scorer.
@@ -37,7 +43,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use odr_detect::{
-    generate_day, Confidence, Day, DayOptions, Episode, Monitor, Report, RuleSet, Score, Signal,
+    generate_day, BenignEvent, Confidence, Day, DayOptions, Episode, Monitor, Report, RuleSet,
+    RuleSetSpec, Score, Signal,
 };
 
 use crate::error::Result;
@@ -99,6 +106,31 @@ impl DetectionOutcome {
             .any(|f| f.confidence == Confidence::Ambiguous)
     }
 
+    /// Which episode of the day a moment falls in, if it falls in one.
+    ///
+    /// What it is for is naming a false positive. "A downgrade was reported at
+    /// t=349 s" tells a learner nothing; "a downgrade was reported during the
+    /// reader-replacement episode" tells them which benign event their rule
+    /// fired on and therefore which knob to turn. The episodes are separate
+    /// worlds concatenated with a minute of silence between them, so a moment
+    /// belongs to at most one of them.
+    pub fn episode_at(&self, t_us: u64) -> Option<Episode> {
+        self.day
+            .timeline()
+            .iter()
+            .find(|s| t_us >= s.start_us && t_us <= s.start_us + s.duration_us)
+            .map(|s| s.episode)
+    }
+
+    /// The benign events scattered through the day.
+    ///
+    /// Carried out to a caller so a rule editor can show a learner what is in
+    /// the traffic that is *supposed* to look like an attack — before they run,
+    /// not only after they have fired on one.
+    pub fn benign(&self) -> &[BenignEvent] {
+        self.day.key().benign()
+    }
+
     /// A one-line summary for the flag's evidence list.
     pub fn summary(&self) -> String {
         alloc::format!(
@@ -125,6 +157,19 @@ pub fn run_ruleset(day: &Day, rules: &RuleSet) -> Result<DetectionOutcome> {
     let monitor: Monitor = day.monitor()?;
     let report = rules.run(&monitor);
     Ok(score_report(day, &monitor, report))
+}
+
+/// **Run a rule set the learner composed**, against the same day and the same
+/// answer key as any preset.
+///
+/// This is drill 5.2's actual exercise. There is no second scoring path and no
+/// allowance for a composed set: it is built into an ordinary
+/// [`RuleSet`] and handed the same capture, so a set that
+/// alerts on everything scores exactly as badly as a hand-written one that
+/// does — which `odr-detect`'s
+/// `a_composed_set_tuned_to_alert_on_everything_scores_badly` pins down.
+pub fn run_composed(day: &Day, spec: &RuleSetSpec) -> Result<DetectionOutcome> {
+    run_ruleset(day, &spec.build())
 }
 
 /// Score findings that were produced elsewhere.
@@ -178,26 +223,18 @@ pub const DOWNGRADE_FALSE_POSITIVE_CASES: &[Episode] =
 /// **A rule set that catches more and cries wolf**, for drill 5.2's negative
 /// half.
 ///
-/// The only difference from the standard set is that the downgrade rule stops
+/// The difference from the standard set is that the downgrade rule stops
 /// checking device identity across a capability change. That catches the
 /// identity-spoofing variant of the attack — an implant that rewrites
 /// `REPLY_PDID` as well as `REPLY_PDCAP`, which costs the attacker nothing —
 /// and alerts on every reader swap in the building. Both halves of that trade
 /// are real, and a learner should see the price rather than be told about it.
+///
+/// It is `odr-detect`'s [`RuleSet::strict`] preset, which is also reachable as
+/// the composition `RuleSetSpec::preset("strict")` — the same four rules,
+/// selectable one at a time in the rule editor.
 pub fn strict_ruleset() -> RuleSet {
-    RuleSet::empty("strict downgrade")
-        .with(alloc::boxed::Box::new(
-            odr_detect::rules::PostureDetector::default(),
-        ))
-        .with(alloc::boxed::Box::new(
-            odr_detect::rules::KeyDetector::default(),
-        ))
-        .with(alloc::boxed::Box::new(
-            odr_detect::rules::KeysetDetector::default(),
-        ))
-        .with(alloc::boxed::Box::new(
-            odr_detect::rules::DowngradeDetector::strict(),
-        ))
+    RuleSet::strict()
 }
 
 /// The episodes carrying the Module 3 attacks, for drill 5.1's evidence list.

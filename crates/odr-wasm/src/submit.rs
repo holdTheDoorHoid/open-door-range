@@ -16,9 +16,11 @@
 //! contains.
 //!
 //! Module 5 is the exception, and for the reason `odr-scenario`'s `module5`
-//! module gives: its input is a rule set, which is a list of trait objects
-//! rather than a value. The form there chooses between rule sets the engine
-//! then *runs*.
+//! module gives: its input is a rule set, which the engine *runs* rather than
+//! compares. The form here is the "start from" control — a preset, or the
+//! learner's own composition — and the rule the learner builds out of
+//! [`crate::rules`]'s catalogue is carried in the same field, as the one-line
+//! encoding `RuleSetSpec` round-trips through.
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -26,42 +28,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use odr_credential::desfire::AttackFailure;
+use odr_detect::catalog::PRESETS;
 use odr_scenario::submission::{FieldSpan, FrameField};
-use odr_scenario::{Drill, Facts, Submission};
+use odr_scenario::{Drill, Facts, RuleSetSpec, Submission};
 
 use crate::json::{self, Json};
-
-/// Which rule set Module 5 runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RuleChoice {
-    /// Nothing at all: the honest floor.
-    #[default]
-    Empty,
-    /// `odr-detect`'s standard set.
-    Standard,
-    /// The strict downgrade rule, which catches more and cries wolf.
-    Strict,
-}
-
-impl RuleChoice {
-    /// Parse the value the form carries.
-    pub fn parse(v: &str) -> RuleChoice {
-        match v {
-            "standard" => RuleChoice::Standard,
-            "strict" => RuleChoice::Strict,
-            _ => RuleChoice::Empty,
-        }
-    }
-
-    /// The value the form carries.
-    pub fn name(self) -> &'static str {
-        match self {
-            RuleChoice::Empty => "empty",
-            RuleChoice::Standard => "standard",
-            RuleChoice::Strict => "strict",
-        }
-    }
-}
 
 /// The three failures drill 0.5 asks a learner to recognise.
 const FAILURES: [AttackFailure; 3] = [
@@ -209,32 +180,50 @@ fn layout_spec(prompt: &str, facts: &Facts, values: &BTreeMap<String, String>) -
 }
 
 fn module5_spec(values: &BTreeMap<String, String>) -> Json {
+    // The value the form carries is a *composition*, not a menu choice: either
+    // a preset name or the encoding `RuleSetSpec::encode` produces. The select
+    // is the "start from" control — the rule editor beside it is where a
+    // learner builds their own, which is what drill 5.2 actually asks for.
+    let current = values.get("ruleset").cloned().unwrap_or_default();
+    let matched = RuleSetSpec::parse(&current)
+        .ok()
+        .and_then(|spec| spec.matching_preset());
+
     let mut choice = sf(
         "ruleset",
-        "Rule set to run against the day",
+        "Start from",
         "select",
         "A Module 5 drill submits a rule set, not a value: the engine runs it against a generated \
-         day and scores the report against an answer key the rules never see. The empty set is the \
-         honest floor — it catches nothing and cries wolf about nothing.",
+         day and scores the report against an answer key the rules never see. Pick a starting \
+         point here and tune it in the rule builder — drill 5.2 asks you to *build* a rule, and \
+         the one toggle that drill is about is the downgrade rule's identity check.",
     );
-    choice.options = alloc::vec![
-        (
-            String::from("empty"),
-            String::from("nothing at all (the floor)")
-        ),
-        (
-            String::from("standard"),
-            String::from("odr-detect's standard set")
-        ),
-        (
-            String::from("strict"),
-            String::from("strict downgrade rule — catches more, cries wolf")
-        ),
-    ];
+    choice.options = PRESETS
+        .iter()
+        .map(|(id, label, _)| (String::from(*id), String::from(*label)))
+        .collect();
+    if matched.is_none() {
+        // Never show "standard" while running something else: an interface
+        // that misreported what the engine was doing would be the thing
+        // docs/UI.md's collapse-never-remove rule exists to prevent.
+        choice.options.push((
+            current.clone(),
+            format!(
+                "your own composition — {} rule(s)",
+                RuleSetSpec::parse(&current).map(|s| s.len()).unwrap_or(0)
+            ),
+        ));
+    }
+
+    let mut adjusted = values.clone();
+    adjusted.insert(
+        String::from("ruleset"),
+        matched.map(String::from).unwrap_or(current),
+    );
     form(
         "a detection rule set, which the engine runs rather than compares",
         alloc::vec![choice],
-        values,
+        &adjusted,
     )
 }
 

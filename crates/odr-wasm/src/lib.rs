@@ -42,6 +42,7 @@
 //! | [`mod@bench`] | one run, projected into frames, markers and state |
 //! | [`config`] | the collapsible groups, derived from the bench |
 //! | [`submit`] | the typed claims seven drills take |
+//! | [`mod@rules`] | Module 5's rule catalogue and its scored report |
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -53,6 +54,7 @@ pub mod bench;
 pub mod config;
 pub mod decode;
 pub mod json;
+pub mod rules;
 pub mod submit;
 
 use alloc::collections::BTreeMap;
@@ -63,14 +65,14 @@ use alloc::vec::Vec;
 use odr_bus::Micros;
 use odr_scenario::ids::{Band, DrillId, LinkRole, TapMode};
 use odr_scenario::options::{self as bench_options, BenchOptions};
-use odr_scenario::{catalog, module5, Drill, Facts, Outcome, ScenarioId};
+use odr_scenario::{catalog, module5, Drill, Facts, Outcome, RuleSetSpec, ScenarioId};
 use wasm_bindgen::prelude::*;
 
 use bench::{Marker, Patch, Run, Runner, Tap};
 use json::{b, n, nu, nz, s, strs, Json};
 
 /// The API version `site/ENGINE-API.md` §0 names. Bump on a breaking change.
-pub const ENGINE_API_VERSION: u32 = 3;
+pub const ENGINE_API_VERSION: u32 = 4;
 
 /// The session seed, derived from the drill so a reload gives the same bench.
 ///
@@ -104,7 +106,12 @@ pub struct Engine {
     tap_seq: u32,
     options: BenchOptions,
     values: BTreeMap<String, String>,
-    rules: submit::RuleChoice,
+    /// Module 5's answer: the rule set the learner composed, which the engine
+    /// *runs* rather than compares. `site/ENGINE-API.md` §13.
+    rules: RuleSetSpec,
+    /// The last rule-set refusal, kept so the editor can show it beside the
+    /// control rather than swallowing it — `docs/UI.md`: warn, do not block.
+    rule_error: Option<String>,
     short_done: BTreeMap<String, bool>,
     run: Run,
     error: Option<String>,
@@ -132,7 +139,8 @@ impl Engine {
             taps,
             options: BenchOptions::default(),
             values: BTreeMap::new(),
-            rules: submit::RuleChoice::default(),
+            rules: RuleSetSpec::empty("nothing at all"),
+            rule_error: None,
             short_done: BTreeMap::new(),
             run,
             error: None,
@@ -255,7 +263,8 @@ impl Engine {
         self.seed = seed_for(d.id);
         self.options = BenchOptions::default();
         self.values.clear();
-        self.rules = submit::RuleChoice::default();
+        self.rules = RuleSetSpec::empty("nothing at all");
+        self.rule_error = None;
         self.short_done.clear();
         self.tap_seq = 0;
         self.taps = pre_placed(d, self.band, 0);
@@ -886,13 +895,25 @@ impl Engine {
     /// day, because there the submission *is* the thing that gets run.
     #[wasm_bindgen(js_name = submitField)]
     pub fn submit_field(&mut self, id: &str, value: &str) -> String {
-        self.values.insert(id.to_string(), value.to_string());
         if id == "ruleset" {
-            self.rules = submit::RuleChoice::parse(value);
-            self.rebuild();
-        } else {
-            self.bump();
+            // A rule set is RUN rather than compared, so a bad one is refused
+            // in words rather than quietly scored as something else.
+            match RuleSetSpec::parse(value) {
+                Ok(spec) => {
+                    self.values.insert(id.to_string(), spec.encode());
+                    self.rules = spec;
+                    self.rule_error = None;
+                    self.rebuild();
+                }
+                Err(e) => {
+                    self.rule_error = Some(format!("{e}"));
+                    self.bump();
+                }
+            }
+            return self.flag();
         }
+        self.values.insert(id.to_string(), value.to_string());
+        self.bump();
         self.flag()
     }
 
@@ -900,9 +921,80 @@ impl Engine {
     #[wasm_bindgen(js_name = clearSubmission)]
     pub fn clear_submission(&mut self) -> String {
         self.values.clear();
-        self.rules = submit::RuleChoice::default();
+        self.rules = RuleSetSpec::empty("nothing at all");
+        self.rule_error = None;
         self.rebuild();
         self.flag()
+    }
+
+    // -----------------------------------------------------------------
+    // §13 Module 5 — the rule editor
+    // -----------------------------------------------------------------
+
+    /// `engine.ruleCatalog()` — **the parts a rule set is built from.**
+    ///
+    /// Every selectable rule, with a stable id, a label, one line on what it
+    /// catches, one line on what it will false-positive on, and its tunable
+    /// parameters with their legal ranges — plus the presets and whatever the
+    /// learner currently has selected. It is a rendering of
+    /// `odr_detect::catalog::RULES`, which is the same table the detectors are
+    /// configured from, so the site can hold no stale copy of a bound.
+    #[wasm_bindgen(js_name = ruleCatalog)]
+    pub fn rule_catalog(&self) -> String {
+        rules::catalog(&self.rules).render()
+    }
+
+    /// `engine.setRules(text)` — **compose the rule set and run it.**
+    ///
+    /// `text` is either a preset name (`"standard"`) or a composition:
+    /// `posture;downgrade:require_same_identity=0`. Refusals are returned in
+    /// the engine's own words and change nothing — a learner whose rule was
+    /// silently dropped would be scored on a set they did not build.
+    #[wasm_bindgen(js_name = setRules)]
+    pub fn set_rules(&mut self, text: &str) -> String {
+        let mut o = Json::obj();
+        match RuleSetSpec::parse(text) {
+            Ok(spec) => {
+                self.values.insert(String::from("ruleset"), spec.encode());
+                self.rules = spec;
+                self.rule_error = None;
+                self.rebuild();
+                o.set("ok", b(true))
+                    .set("error", Json::Null)
+                    .set("selection", rules::selection(&self.rules));
+            }
+            Err(e) => {
+                self.rule_error = Some(format!("{e}"));
+                o.set("ok", b(false))
+                    .set("error", s(format!("{e}")))
+                    .set("selection", rules::selection(&self.rules));
+            }
+        }
+        o.render()
+    }
+
+    /// `engine.detection()` — **the score, with its reasoning.**
+    ///
+    /// `null` outside Module 5. Inside it: the day's episodes, the benign
+    /// events planted in it, the true positives with their detection latency,
+    /// the attacks missed, and every false positive named — each tied to the
+    /// frames that justify it, so a learner can see *why* their set fired where
+    /// it should not have rather than only that it did.
+    pub fn detection(&self) -> String {
+        let Some(d) = self.run.outcome.facts.detection.as_ref() else {
+            return String::from("null");
+        };
+        let ran = self.run.outcome.facts.attack_performed;
+        let mut o = rules::detection(d, &self.rules, ran);
+        o.set(
+            "error",
+            match &self.rule_error {
+                Some(e) => s(e.clone()),
+                None => Json::Null,
+            },
+        )
+        .set("probeOnLink", b(ran));
+        o.render()
     }
 
     // -----------------------------------------------------------------
@@ -1036,12 +1128,14 @@ impl Engine {
     fn drive_module5(&self, drill: &'static Drill) -> Result<Run, String> {
         let satisfied = bench::plan_satisfied(drill, &self.taps);
         let day = module5::day(self.seed).map_err(|e| format!("{e}"))?;
-        let rules = match (satisfied, self.rules) {
-            (true, submit::RuleChoice::Standard) => odr_detect::RuleSet::standard(),
-            (true, submit::RuleChoice::Strict) => module5::strict_ruleset(),
-            _ => odr_detect::RuleSet::empty("nothing at all"),
+        // A probe that is not clipped on sees nothing, so a rule set has
+        // nothing to run against: the honest floor, not the learner's set.
+        let spec = if satisfied {
+            self.rules.clone()
+        } else {
+            RuleSetSpec::empty("no probe on the link")
         };
-        let detection = module5::run_ruleset(&day, &rules).map_err(|e| format!("{e}"))?;
+        let detection = module5::run_composed(&day, &spec).map_err(|e| format!("{e}"))?;
         let outcome = Outcome {
             drill: drill.id,
             seed: self.seed,
@@ -1054,7 +1148,7 @@ impl Engine {
             },
         };
         Ok(bench::project_outcome(
-            if satisfied && self.rules != submit::RuleChoice::Empty {
+            if satisfied && !self.rules.is_empty() {
                 Runner::Solve
             } else {
                 Runner::Baseline

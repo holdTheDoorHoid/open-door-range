@@ -1404,3 +1404,338 @@ fn the_weak_key_family_is_not_accidentally_the_site_key() {
     assert!(odr_osdp::weak_keys::classify(&scenario::SITE_KEY).is_none());
     assert_ne!(scenario::SITE_KEY, SCBK_D);
 }
+
+// ---------------------------------------------------------------------------
+// The rule catalogue — curriculum 5.2's "build a rule", rather than "pick one"
+// ---------------------------------------------------------------------------
+
+/// The catalogue has to describe the detectors that exist, not the ones it
+/// remembers: a spec whose id no detector answers to would draw a control in
+/// the interface that changed nothing.
+#[test]
+fn every_catalogue_rule_builds_the_detector_it_names() {
+    for spec in catalog::RULES {
+        let built = catalog::ComposedRule::new(spec).build();
+        assert_eq!(
+            built.name(),
+            spec.id,
+            "catalogue id {} builds a detector calling itself {}",
+            spec.id,
+            built.name()
+        );
+        assert_eq!(
+            built.signals(),
+            spec.signals,
+            "{} claims signals the detector does not emit",
+            spec.id
+        );
+        assert!(!spec.label.is_empty());
+        assert!(spec.catches.len() > 40, "{}", spec.id);
+        assert!(spec.false_positives.len() > 40, "{}", spec.id);
+        for p in spec.params {
+            assert!(p.kind.accepts(p.default), "{}.{}", spec.id, p.id);
+            assert!(p.help.len() > 20, "{}.{}", spec.id, p.id);
+        }
+    }
+}
+
+/// Every detector this crate ships is selectable. A rule that exists and cannot
+/// be chosen is a rule the learner is being told about rather than handed.
+#[test]
+fn the_catalogue_covers_every_detector_in_the_standard_set() {
+    let standard = RuleSet::standard();
+    let names: Vec<&str> = standard.detectors().map(|d| d.name()).collect();
+    for name in &names {
+        assert!(
+            catalog::rule(name).is_some(),
+            "{name} is in the standard set and not in the catalogue"
+        );
+    }
+    assert_eq!(names.len(), catalog::RULES.len());
+}
+
+/// **"Start from standard and change one thing" has to start from the same
+/// place.** The composed set and the hand-written preset are two independent
+/// statements of the same tuning, and this is what keeps them one tuning.
+#[test]
+fn a_composed_standard_set_scores_identically_to_the_preset() {
+    let day = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    let monitor = day.monitor().expect("monitor");
+
+    let preset = RuleSet::standard().run(&monitor);
+    let composed = catalog::RuleSetSpec::standard().build().run(&monitor);
+    assert_eq!(
+        preset, composed,
+        "composed standard differs from the preset"
+    );
+
+    let a = day.key().score(&preset);
+    let b = day.key().score(&composed);
+    assert_eq!(a, b);
+    assert_eq!(b.precision_pct(), 100);
+    assert_eq!(b.recall_pct(), 100);
+}
+
+/// The other preset, the same way.
+#[test]
+fn a_composed_strict_set_matches_the_strict_preset() {
+    let day = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    let monitor = day.monitor().expect("monitor");
+    assert_eq!(
+        RuleSet::strict().run(&monitor),
+        catalog::RuleSetSpec::strict().build().run(&monitor)
+    );
+    assert_eq!(
+        catalog::RuleSetSpec::standard().matching_preset(),
+        Some("standard")
+    );
+    assert_eq!(
+        catalog::RuleSetSpec::strict().matching_preset(),
+        Some("strict")
+    );
+    assert_eq!(
+        catalog::RuleSetSpec::empty("mine").matching_preset(),
+        Some("empty")
+    );
+}
+
+/// **Each rule changes the score in the way it claims.** Removing one from the
+/// standard set must lose exactly the conclusions that rule is the only source
+/// of — which is the claim the catalogue's `catches` line makes to a learner
+/// choosing whether to select it.
+#[test]
+fn removing_any_one_rule_loses_what_that_rule_claims_to_catch() {
+    let day = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    let monitor = day.monitor().expect("monitor");
+    let full = catalog::RuleSetSpec::standard();
+    let full_report = full.build().run(&monitor);
+    let full_score = day.key().score(&full_report);
+
+    for spec in catalog::RULES {
+        let mut without = catalog::RuleSetSpec::standard();
+        without.disable(spec.id);
+        assert!(!without.contains(spec.id));
+        let report = without.build().run(&monitor);
+        let score = day.key().score(&report);
+
+        // Something it uniquely reported is gone.
+        assert!(
+            report.len() < full_report.len(),
+            "dropping {} changed nothing at all",
+            spec.id
+        );
+
+        // And what is gone carries this rule's own signals, not somebody
+        // else's — the interface tells a learner what each rule catches, and
+        // this is that sentence under test.
+        let lost_signals: Vec<Signal> = full_report
+            .findings()
+            .iter()
+            .filter(|f| !report.findings().contains(f))
+            .map(|f| f.what)
+            .collect();
+        assert!(!lost_signals.is_empty(), "{}", spec.id);
+        for s in &lost_signals {
+            assert!(
+                spec.signals.contains(s),
+                "dropping {} lost a {} finding, which it does not emit",
+                spec.id,
+                s.name()
+            );
+        }
+
+        // A rule that catches something scored is a rule whose absence costs
+        // recall; the keyset rule's only contribution is an ambiguous one, and
+        // costing nothing but that is exactly what it claims.
+        let scored_loss = score.true_positives().len() < full_score.true_positives().len();
+        let ambiguous_loss = score.ambiguous().len() < full_score.ambiguous().len();
+        assert!(
+            scored_loss || ambiguous_loss,
+            "dropping {} changed no part of the score",
+            spec.id
+        );
+        assert!(
+            score.false_positives().len() <= full_score.false_positives().len(),
+            "dropping {} invented a false positive",
+            spec.id
+        );
+    }
+}
+
+/// A parameter that is offered and does nothing is worse than a parameter that
+/// is not offered, so the one drill 5.2 turns on gets its own test here as well
+/// as in the downgrade module.
+#[test]
+fn the_downgrade_toggle_is_the_whole_of_drill_5_2() {
+    let day = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    let monitor = day.monitor().expect("monitor");
+
+    let mut mine = catalog::RuleSetSpec::standard();
+    let quiet = day.key().score(&mine.build().run(&monitor));
+    assert!(quiet.is_quiet_on_benign());
+
+    mine.set_param("downgrade", "require_same_identity", 0)
+        .expect("the toggle is in the catalogue");
+    let loud = day.key().score(&mine.build().run(&monitor));
+
+    assert!(
+        !loud.is_quiet_on_benign(),
+        "turning the identity check off should fire on the benign reader swap"
+    );
+    assert!(loud.precision_pct() < quiet.precision_pct());
+    assert_eq!(
+        loud.recall_pct(),
+        quiet.recall_pct(),
+        "and it should not cost recall — the trade is precision for coverage of a variant"
+    );
+    let named: Vec<&str> = loud
+        .false_positives()
+        .iter()
+        .filter_map(|f| f.benign.as_deref())
+        .collect();
+    assert!(
+        named.iter().any(|b| b.contains("replaced")),
+        "the false positive should be named as the reader replacement: {named:?}"
+    );
+}
+
+/// **A composed set that alerts on everything still scores badly.** The same
+/// guarantee `a_rule_set_that_alerts_on_everything_scores_badly` makes for a
+/// hand-written detector, made for a set a learner can actually build in the
+/// interface by dragging every threshold to its loudest legal value.
+#[test]
+fn a_composed_set_tuned_to_alert_on_everything_scores_badly() {
+    let day = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    let monitor = day.monitor().expect("monitor");
+
+    // Every knob dragged the way a learner chasing recall would drag it. The
+    // values are written out rather than derived, because "loudest" is not the
+    // same direction for every parameter: a *longer* memory makes the injection
+    // rule louder and the posture rule quieter.
+    let loudest: &[(&str, &str, u64)] = &[
+        ("posture", "min_frames", 1),              // call a run after one frame
+        ("posture", "gap_us", 100_000),            // and start a new run constantly
+        ("downgrade", "require_same_identity", 0), // a reader swap is an attack
+        ("downgrade", "resync_grace_us", 0),       // a reboot is an attack
+        ("downgrade", "min_unsecured_run", 1),
+        ("injection", "min_command_gap_us", 10_000_000), // every retry is an injection
+        ("injection", "gap_us", 600_000_000),            // never forget a sequence number
+        ("injection", "max_per_kind", 256),
+        ("replay", "frame_window_us", 600_000_000),
+        ("replay", "credential_window_us", 600_000_000),
+        ("replay", "human_min_us", 60_000_000), // nobody badges twice in a minute
+        ("replay", "max_per_kind", 256),
+        ("wire", "gap_us", 100_000),
+        ("wire", "max_malformed", 256),
+        ("traffic", "min_events", 1), // one badge-in is a pattern
+    ];
+    let mut loud = catalog::RuleSetSpec::standard();
+    for (rule_id, param_id, value) in loudest {
+        loud.set_param(rule_id, param_id, *value)
+            .expect("every one of these is in the catalogue and in range");
+    }
+
+    let report = loud.build().run(&monitor);
+    let score = day.key().score(&report);
+    assert!(
+        score.precision_pct() < 20,
+        "a set that alerts on everything scored {}% precision\n{}",
+        score.precision_pct(),
+        score.explain().chars().take(400).collect::<String>()
+    );
+    assert!(!score.is_quiet_on_benign());
+    assert!(
+        score
+            .false_positives()
+            .iter()
+            .filter(|f| f.benign.is_some())
+            .count()
+            > 10,
+        "it should be firing on the named benign events, repeatedly"
+    );
+    // And it is still checkable: loud is not the same as dishonest.
+    assert!(report.evidence_checks(&monitor));
+}
+
+/// A composition survives the round trip to the string the site hands back, and
+/// the string says what changed rather than restating every default.
+#[test]
+fn a_composition_round_trips_through_its_encoding() {
+    let mut mine = catalog::RuleSetSpec::standard();
+    mine.set_param("downgrade", "require_same_identity", 0)
+        .expect("in range");
+    let text = mine.encode();
+    assert!(text.contains("downgrade:require_same_identity=0"), "{text}");
+    assert!(
+        !text.contains("min_frames"),
+        "defaults are not written: {text}"
+    );
+    assert_eq!(catalog::RuleSetSpec::parse(&text).expect("parses"), mine);
+
+    // The preset names the selector has always carried still parse.
+    for (id, _, _) in catalog::PRESETS {
+        let parsed = catalog::RuleSetSpec::parse(id).expect("preset parses");
+        assert_eq!(parsed.matching_preset(), Some(*id));
+    }
+    assert_eq!(
+        catalog::RuleSetSpec::parse("").expect("empty parses").len(),
+        0
+    );
+
+    // Order of selection does not change the composition or its encoding.
+    let mut a = catalog::RuleSetSpec::empty("a");
+    a.enable("traffic").expect("known rule");
+    a.enable("posture").expect("known rule");
+    let mut b = catalog::RuleSetSpec::empty("b");
+    b.enable("posture").expect("known rule");
+    b.enable("traffic").expect("known rule");
+    assert_eq!(a.encode(), b.encode());
+}
+
+/// A learner's mistake is refused with a sentence, not dropped in silence: a
+/// rule set that quietly lost a rule would be scored as something the learner
+/// did not build.
+#[test]
+fn a_bad_composition_is_refused_in_words_a_learner_can_act_on() {
+    let err = catalog::RuleSetSpec::parse("downgrayed").expect_err("unknown rule");
+    assert!(alloc::format!("{err}").contains("downgrayed"));
+
+    let err = catalog::RuleSetSpec::parse("downgrade:requires_same_identity=0")
+        .expect_err("unknown parameter");
+    assert!(alloc::format!("{err}").contains("requires_same_identity"));
+
+    let err = catalog::RuleSetSpec::parse("posture:min_frames=99999").expect_err("out of range");
+    let text = alloc::format!("{err}");
+    assert!(text.contains("1..=512"), "{text}");
+
+    let err = catalog::RuleSetSpec::parse("posture:min_frames=lots").expect_err("not a number");
+    assert!(alloc::format!("{err}").contains("whole number"));
+
+    // A parameter for a rule that is not selected is refused rather than
+    // silently enabling the rule.
+    let mut spec = catalog::RuleSetSpec::empty("mine");
+    assert!(spec.set_param("replay", "human_min_us", 0).is_err());
+}
+
+/// `DESIGN.md` §3: the same composition gives the same report and the same
+/// score every time, from a string alone.
+#[test]
+fn a_composition_is_deterministic_from_its_text() {
+    let text = "posture:min_frames=4;downgrade:require_same_identity=0;traffic";
+    let day = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    let monitor = day.monitor().expect("monitor");
+
+    let first = catalog::RuleSetSpec::parse(text).expect("parses");
+    let second = catalog::RuleSetSpec::parse(&first.encode()).expect("re-parses");
+    let ra = first.build().run(&monitor);
+    let rb = second.build().run(&monitor);
+    assert_eq!(ra, rb);
+    assert_eq!(day.key().score(&ra), day.key().score(&rb));
+
+    // And from a freshly generated day, which is the claim that matters: a
+    // learner who reloads the tab is scored against the same traffic.
+    let again = generate_day(0x0D00_5EED, &DayOptions::default()).expect("day");
+    assert_eq!(again.capture(), day.capture());
+    let rc = first.build().run(&again.monitor().expect("monitor"));
+    assert_eq!(ra, rc);
+}

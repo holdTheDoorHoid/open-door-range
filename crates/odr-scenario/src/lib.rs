@@ -136,6 +136,10 @@ pub use facts::{
 pub use flag::{evaluate, Flag, FlagContext, Measurement};
 pub use ids::{Band, Completion, DrillId, LinkRole, ModuleId, TapMode, TapPlan};
 pub use module5::DetectionOutcome;
+// The rule catalogue a learner composes Module 5's answer from. Re-exported
+// here so the bridge and the CLI take one dependency on "what a rule set is"
+// rather than two.
+pub use odr_detect::catalog::{ComposedRule, ParamKind, RuleParam, RuleSetSpec, RuleSpec};
 pub use options::{BenchOptions, KeyChoice, LinkChoice, OptionKind, OptionSpec, OptionValue};
 pub use run::{
     baseline, baseline_with, observe_only, observe_only_with, solve, solve_with, Outcome,

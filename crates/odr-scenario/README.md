@@ -184,11 +184,38 @@ Drill 0.6 also carries a `submission`, and it is the one that is not a claim
 about anything: `Submission::Acknowledged` is how a section that completes by
 being read says it has been, without the API pretending a flag was earned.
 
-Module 5's input is a detection **rule set**, which is a list of trait objects
-rather than a value. It is handed to `run::score_module_5` and *run*, not
-compared — so those three drills have `submission: None` and a
+Module 5's input is a detection **rule set**, which is *run* rather than
+compared — so those three drills have `submission: None`, and a
 `Submission::Detection` variant exists only for a caller that scored a report
 elsewhere.
+
+Two entry points take one:
+
+| Entry point | Takes | For |
+|---|---|---|
+| `run::score_module_5` | `odr_detect::RuleSet` | a caller that already built the detectors |
+| `run::score_module_5_composed` | `odr_detect::RuleSetSpec` | **a rule set the learner composed** |
+
+`RuleSetSpec` is `odr-detect`'s catalogue shape: a selection of rules with their
+parameters set, which round-trips through one line of text. It is what
+`docs/CURRICULUM.md` drill 5.2 means by *build a detection rule* — the learner
+picks which detectors are in their set, sets the parameters that matter (the
+downgrade rule's identity check above all), runs it against the generated day
+and is scored on true and false positives.
+
+There is **no second scoring path**. A composed set is built into an ordinary
+`RuleSet` and handed the same capture and the same answer key, so composing buys
+a learner control and no indulgence at all:
+`drill_5_2_refuses_a_composed_set_that_alerts_on_everything` builds the loudest
+legal set in the catalogue, watches precision collapse, and asserts the flag is
+refused.
+
+`DetectionOutcome` carries what a rule editor needs to explain a score rather
+than only state it: `episode_at(t_us)` names the stretch of the day a finding
+landed in, and `benign()` lists the events that are in the traffic specifically
+to look like attacks. "A downgrade was reported at t=349 s" tells a learner
+nothing; "a downgrade was reported during the reader-replacement episode" tells
+them which knob to turn.
 
 ## Running a drill
 
@@ -377,6 +404,15 @@ Roughly in order of how much they would matter if they turned out wrong.
    false-positive cases — and drill 5.2's negative test, which runs the strict
    downgrade rule and asserts it fires on a benign reader swap, is one of them.
 
+   What has changed since that was written is **who runs the negative test**.
+   The learner composes their own rule set now, so the interesting number is not
+   the standard set's 100% but the 91% they get when they turn the downgrade
+   rule's identity check off and watch it report the benign reader replacement.
+   I am still not certain the *presentation* carries that: a learner who reads
+   100% first may take it as the target rather than as the suspicious number,
+   and nothing in this crate can stop them. The mitigation is that the empty set
+   is offered as an explicit starting point and named "the honest floor".
+
 7. **Drill 1.5's bench enrols a low card number on purpose.** A sweep that
    starts at zero has to reach the enrolled credential inside a browser tab, so
    `WiegandSweep` draws a card number in 0..=63. Low card numbers are real —
@@ -440,7 +476,18 @@ Roughly in order of how much they would matter if they turned out wrong.
     it is derived from the run rather than stored — but it is still the answer,
     and a front end should not put it behind a button labelled "hint".
 
-17. **The `Facts` struct is wide.** Fourteen optional fields, most of them used
+17. **Drill 5.2's flag is still "catch the downgrade, stay quiet on the two
+    look-alikes", not "build a rule".** The predicate cannot tell a rule set the
+    learner composed from the `standard` preset, because both arrive as the same
+    kind of object and the flag reads the score. Selecting `standard` and
+    pressing run therefore earns 5.2 without anything having been built. I think
+    that is right — the drill's claim is about a rule set's behaviour, and a
+    predicate that demanded a *different* rule set would be scoring novelty
+    rather than detection — but it does mean the "build" in the curriculum's
+    wording is carried by the interface and the guidance rather than by the
+    predicate.
+
+18. **The `Facts` struct is wide.** Fourteen optional fields, most of them used
     by one drill. The alternative was a trait object per drill, which would have
     moved the predicates out of one readable file and into twenty-nine small
     ones. If a third of the curriculum changes shape this is the thing to

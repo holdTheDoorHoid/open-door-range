@@ -31,6 +31,39 @@ wasm-pack build crates/odr-wasm --target web --out-dir ../../site/pkg
 
 ---
 
+## What changed in version 4
+
+**A rule editor for Module 5** (§13). `docs/CURRICULUM.md` drill 5.2 says *build* a
+detection rule that catches the downgrade and does not fire on a genuine legacy reader —
+and v3 offered a menu of three pre-made rule sets, which made the most interesting
+exercise in the defender's module multiple-choice. Three calls fix that:
+
+1. **`engine.ruleCatalog()`** publishes the parts a rule set is built from: every
+   selectable rule with a stable id, a label, one line on what it catches, one line on
+   **what it will false-positive on**, and its tunable parameters with their legal ranges.
+   It is a rendering of `odr_detect::catalog::RULES`, which is the same table the
+   detectors are configured from. **The site hardcodes no rule, no default and no bound.**
+2. **`engine.setRules(text)`** takes a composition — a preset name, or
+   `posture;downgrade:require_same_identity=0` — builds it and runs it against the
+   generated day. A refusal names the rule, the parameter and the legal range, and
+   changes nothing: a learner whose rule was silently dropped would be scored on a set
+   they did not build.
+3. **`engine.detection()`** returns the score **with its reasoning** — the day's
+   episodes, the benign events planted in it, every true positive with its detection
+   latency and the frames that justify it, every attack missed, and every false positive
+   named with the benign event it landed on.
+
+`engine.submitField('ruleset', …)` still exists and now takes a composition as well as a
+preset name; §9's Module 5 form is the "start from" control beside the builder.
+`engine-mock.js` implements v4, including the rule editor: a reference implementation
+that could only offer a menu would be describing a different contract.
+
+**Not yet forwarded by `engine-wasm.js`.** The wrapper in `site/js/engine-wasm.js` does
+not yet carry `ruleCatalog`, `setRules` and `detection`, and still exports
+`ENGINE_API_VERSION = 3`. `site/js/ui/ruleeditor.js` falls through to the wasm object the
+wrapper holds until three forwarding methods are added there. That is a two-minute
+change and is listed here so it is not forgotten.
+
 ## What changed in version 3
 
 **Configuration sets as well as reports** (§3). Version 2 said the wasm engine refused
@@ -95,7 +128,7 @@ static asset from the same origin and that is the only request the page ever mak
 
 ```js
 export const ENGINE_KIND;          // 'mock' | 'wasm'
-export const ENGINE_API_VERSION;   // integer; bump on a breaking change. Currently 3.
+export const ENGINE_API_VERSION;   // integer; bump on a breaking change. Currently 4.
 export async function createEngine(options?): Promise<Engine>;
 ```
 
@@ -728,6 +761,12 @@ generated; the site never has to know what an OSDP frame contains. Module 5's fo
 choice of *rule set*, because a Module 5 drill submits a list of detectors rather than a
 value and the engine runs it rather than comparing it.
 
+Module 5's `ruleset` field is the **"start from"** control (v4): its options are the
+presets `ruleCatalog()` lists, plus — when the learner has composed something that is not
+a preset — one more option carrying their own composition, so the selector never reports
+a preset while the engine is running something else. The field's value is a composition
+string, and `submitField('ruleset', text)` accepts either form.
+
 ### `engine.submitField(id, value) → Flag`   *(v2)*
 ### `engine.clearSubmission() → Flag`   *(v2)*
 
@@ -812,6 +851,13 @@ at.
 
 ### What the real engine does properly
 
+0. **Module 5's day is real traffic** (§13). The mock's day, its answer key and the
+   findings each rule produces on it are hand-written and say so. The real engine
+   generates twelve episodes by running `odr-bus`, exports one passive probe's capture,
+   and runs the detectors against the re-imported file — so the frames a finding cites are
+   frames a bus produced. What the mock does implement honestly is the *mechanism*: a
+   composition selects rules, rules produce findings, findings are scored against a key
+   containing benign events, and a set that alerts on everything scores badly in both.
 1. **The bytes are real.** Cryptograms, ciphertext and MACs are AES, computed by
    `odr-osdp`, not seeded filler. So are the CRCs, control bytes, security-block layout,
    lengths and Wiegand parity, which the mock also got right.
@@ -846,3 +892,154 @@ asks for encryption on `REPLY_RAW` unconditionally, so the bench runs a null cip
 command half of the link and not the reply half. `odr-scenario`'s README names the
 one-field fix in `odr-bus` and the drill's guidance says plainly which half it can show.
 That is a change to another crate and is reported rather than worked around.
+
+---
+
+## 13. The rule editor (Module 5)   *(v4)*
+
+`docs/CURRICULUM.md` Module 5 replays every earlier module from a monitoring position,
+and its flag line is:
+
+> the learner's rule set is run against a generated day of traffic containing both
+> attacks and benign events, and is scored on true positives and false positives.
+
+Drill 5.2 is sharper than that: *build* a detection rule that catches the downgrade and
+does not fire on a genuine legacy reader being added to the bus. So the engine publishes
+the parts, takes a composition, and hands back a score that shows its reasoning.
+
+### `engine.ruleCatalog() → RuleCatalog`
+
+```ts
+type RuleCatalog = {
+  rules: Array<{
+    id: string;                 // 'downgrade' — the same string the detector answers to
+    label: string;
+    catches: string;            // one line: what it finds
+    falsePositives: string;     // one line: what it will fire on that is not an attack
+    inStandard: boolean;        // whether the 'standard' preset includes it
+    selected: boolean;          // whether it is in the set the engine currently holds
+    signals: Array<{ id: string; describes: string }>;
+    params: Array<{
+      id: string;               // matches the field name on the detector struct
+      label: string;
+      help: string;             // what moving it buys, and what it costs
+      type: 'toggle' | 'count' | 'duration';
+      unit?: 'us';              // duration only
+      min: number; max: number; // the engine's bounds, inclusive
+      default: number;          // the detector's own default; a toggle is 0 or 1
+      value: number;            // what is set now, or the default when unselected
+      changed: boolean;
+    }>;
+  }>;
+  presets: Array<{ id: string; label: string; help: string; text: string }>;
+  selection: Selection;
+};
+
+type Selection = {
+  text: string;                 // the composition, round-trips through setRules
+  name: string;
+  preset: string | null;        // the preset this is identical to, if any
+  ruleCount: number;
+  signals: Array<{ id: string; describes: string }>;
+};
+```
+
+**Everything the interface draws is in here.** A bound changed in `odr-detect` cannot go
+stale in the site, because there is no copy of it in the site to go stale. A rule added to
+the catalogue appears in the editor without the editor being touched.
+
+### `engine.setRules(text) → { ok, error, selection }`
+
+`text` is a preset id (`'standard'`) or a composition:
+
+```
+posture;downgrade:require_same_identity=0;traffic:min_events=1
+```
+
+Rule ids separated by `;`, each optionally followed by `:` and comma-separated
+`name=value` pairs. Values are whole numbers — a toggle is `0` or `1`, a duration is
+microseconds. **Only parameters that differ from the detector's default are written**, so
+a set that changed one thing reads as one thing changed, and the ordering is the
+catalogue's, so two learners who selected the same rules in different orders produce the
+same string.
+
+A refusal (`ok: false`) names the rule, the parameter and the legal range, and leaves the
+engine holding what it held. `setRules` runs the set and re-evaluates the flag, so the
+site re-reads everything afterwards rather than only the flag card.
+
+### `engine.detection() → Detection | null`
+
+`null` outside Module 5.
+
+```ts
+type Detection = {
+  ran: boolean;                 // a non-empty set was run against a real capture
+  probeOnLink: boolean;         // a monitor that is not clipped on sees nothing
+  error: string | null;         // the last refusal, if any
+  ruleSet: Selection;
+  evidenceChecks: boolean;      // every citation still names the bytes it claims to
+  score: {
+    findings, truePositives, falsePositives, falseNegatives, ambiguous: number;
+    precisionPct, recallPct: number;       // integers; see below
+    quietOnBenign: boolean;
+    worstTimeToDetectUs, meanTimeToDetectUs: tUs;
+  };
+  caught:         Finding[];    // + label, verdict, expectedUs, latencyUs
+  ambiguousHits:  Finding[];    // matched an ambiguous expectation
+  missed:         Array<{ signal, describes, label, verdict, tUs, episode }>;
+  falsePositives: Finding[];    // + benign: string | null
+  benign:   Array<{ tUs, durationUs, label, looksLike, episode }>;
+  episodes: Array<{ id, describes, startUs, endUs }>;
+  listCap: number;              // how many of each list are drawn; see below
+  summary: string;
+};
+
+type Finding = {
+  signal: string; describes: string;
+  tUs: tUs; severity: string; confidence: string;
+  note: string;                 // the reasoning, including the benign explanation
+  episode: { id, describes } | null;
+  frameCount: number;
+  frames: Array<{ index: number; tUs: tUs; summary: string; hex: string; bytes: bytes }>;
+};
+```
+
+Four things about this shape are load-bearing.
+
+**Every finding carries the frames that justify it.** `odr-detect`'s rule is that a
+finding with no evidence is an opinion; `Evidence::check` re-reads every citation against
+the capture and `evidenceChecks` reports the result. A score without its reasoning teaches
+a learner to chase a number.
+
+**Every false positive is named.** `benign` is the label of the benign event the finding
+landed on, and `episode` says which stretch of the day that was. "A downgrade was reported
+at t=349 s" tells a learner nothing; "a downgrade was reported during the
+reader-replacement episode" tells them which knob to turn. That is the whole of drill 5.2.
+
+**There are three verdicts, not two.** `ambiguous` counts findings that matched an
+expectation whose cause the wire does not carry — a `CMD_KEYSET` is both the worst thing
+on a bus and undecidable. They are excluded from precision and recall: a learner is
+neither rewarded for reporting a commissioning nor punished for it, which is exactly the
+position a defender is in. That is drill 5.3's answer.
+
+**`benign` is available before the learner runs anything.** The traffic that is supposed
+to look like an attack is part of the exercise, not a punishment revealed afterwards.
+
+`precisionPct` and `recallPct` are integers, floored. `DESIGN.md` §3 wants a score that is
+identical on every machine, and a rounded float is a bad way to get there.
+
+**The lists are capped, and say so.** A rule set tuned to alert on everything produces
+hundreds of findings. `caught`, `missed`, `falsePositives` and `ambiguousHits` carry at
+most `listCap` entries each while `score` carries the full counts, so the interface can
+say "60 of 716 shown" rather than quietly drawing sixty. `docs/UI.md`: collapse, never
+remove.
+
+### What the editor must not do
+
+**It must not score anything.** `odr-scenario` owns the answer key and the scorer, and the
+key is built from the scenario script rather than from what any detector found. A site
+that computed a number would be a second opinion about what a good rule set is.
+
+**It must not block a bad rule set.** `docs/UI.md`'s recorded feedback is prefer warning
+over blocking. A set that will obviously score badly is run anyway: watching it score
+badly is the lesson, and an editor that refused to run it would be teaching by assertion.

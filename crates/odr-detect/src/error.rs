@@ -26,6 +26,14 @@ pub enum DetectError {
     /// A generated day was asked for something contradictory — no episodes, or
     /// a gap so large the timestamps would overflow.
     Scenario(String),
+    /// A composed rule set named a rule that does not exist, a parameter that
+    /// rule does not have, or a value outside the range the catalogue
+    /// declares. See [`catalog`](crate::catalog).
+    ///
+    /// This is the one error a *learner* can cause, so the message is written
+    /// for one: it names the rule, the parameter and the legal range rather
+    /// than saying the input was invalid.
+    Rule(String),
 }
 
 impl fmt::Display for DetectError {
@@ -34,6 +42,7 @@ impl fmt::Display for DetectError {
             DetectError::Capture(e) => write!(f, "capture: {e}"),
             DetectError::Bus(e) => write!(f, "world model: {e}"),
             DetectError::Scenario(s) => write!(f, "scenario: {s}"),
+            DetectError::Rule(s) => write!(f, "rule set: {s}"),
         }
     }
 }

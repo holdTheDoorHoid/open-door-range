@@ -23,7 +23,7 @@
 import init, { Engine } from '../pkg/odr_wasm.js';
 
 export const ENGINE_KIND = 'wasm';
-export const ENGINE_API_VERSION = 3;
+export const ENGINE_API_VERSION = 4;
 
 /**
  * Memoise a JSON-returning call against the engine's mutation counter.
@@ -63,6 +63,18 @@ class WasmEngine {
 
   catalog() {
     return this._memo('catalog', () => JSON.parse(this._e.catalog()));
+  }
+
+  ruleCatalog() {
+    return this._memo('ruleCatalog', () => JSON.parse(this._e.ruleCatalog()));
+  }
+
+  setRules(text) {
+    return JSON.parse(this._e.setRules(String(text)));
+  }
+
+  detection() {
+    return this._memo('detection', () => JSON.parse(this._e.detection()));
   }
 
   getDrill(id) {

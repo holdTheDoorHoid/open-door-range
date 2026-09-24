@@ -465,6 +465,134 @@ fn drill_5_2_a_louder_rule_set_is_refused() {
     );
 }
 
+/// **Drill 5.2 as the curriculum states it: a rule the learner *built*.**
+///
+/// Start from the standard set, change the one thing the drill is about, and
+/// watch the score move. Both halves are asserted here because the lesson is
+/// the trade rather than either end of it.
+#[test]
+fn drill_5_2_is_composed_from_the_catalogue_and_scored_the_same_way() {
+    use odr_scenario::RuleSetSpec;
+
+    // Composed-from-parts and preset are the same rule set, scored identically.
+    let composed = run::score_module_5_composed(
+        DrillId::new(5, 2),
+        SEED,
+        &RuleSetSpec::parse("standard").unwrap(),
+    )
+    .unwrap();
+    let preset =
+        run::score_module_5(DrillId::new(5, 2), SEED, &odr_detect::RuleSet::standard()).unwrap();
+    assert_eq!(
+        composed.facts.detection.clone().unwrap().score,
+        preset.facts.detection.clone().unwrap().score
+    );
+    assert!(composed.flag(None).unwrap().earned);
+
+    // Now the learner's own change: turn the identity check off.
+    let mut mine = RuleSetSpec::standard();
+    mine.set_param("downgrade", "require_same_identity", 0)
+        .unwrap();
+    let louder = run::score_module_5_composed(DrillId::new(5, 2), SEED, &mine).unwrap();
+    let flag = louder.flag(None).unwrap();
+    assert!(
+        !flag.earned,
+        "a set that reports the benign reader swap should not earn 5.2"
+    );
+    let d = louder.facts.detection.unwrap();
+    assert!(d.fired_during(
+        odr_detect::Signal::CapabilityDowngrade,
+        odr_detect::Episode::ReaderReplaced
+    ));
+    // And the false positive is named, with the episode it landed in, because
+    // "you fired on something" is not a thing a learner can act on.
+    let fp = d
+        .score
+        .false_positives()
+        .iter()
+        .find(|f| f.benign.is_some())
+        .expect("a named false positive");
+    assert_eq!(
+        d.episode_at(fp.finding.t_us),
+        Some(odr_detect::Episode::ReaderReplaced)
+    );
+    assert!(!d.benign().is_empty());
+}
+
+/// **A composed set that alerts on everything still scores badly.** The same
+/// guarantee `odr-detect` makes for its scorer, asserted at the level a learner
+/// actually meets it: through the drill, with the flag refused.
+#[test]
+fn drill_5_2_refuses_a_composed_set_that_alerts_on_everything() {
+    use odr_scenario::RuleSetSpec;
+
+    let mut loud = RuleSetSpec::standard();
+    for (rule, param, value) in [
+        ("posture", "min_frames", 1u64),
+        ("posture", "gap_us", 100_000),
+        ("downgrade", "require_same_identity", 0),
+        ("downgrade", "resync_grace_us", 0),
+        ("downgrade", "min_unsecured_run", 1),
+        ("injection", "min_command_gap_us", 10_000_000),
+        ("injection", "max_per_kind", 256),
+        ("replay", "human_min_us", 60_000_000),
+        ("replay", "max_per_kind", 256),
+        ("traffic", "min_events", 1),
+    ] {
+        loud.set_param(rule, param, value).unwrap();
+    }
+
+    let o = run::score_module_5_composed(DrillId::new(5, 2), SEED, &loud).unwrap();
+    let d = o.facts.detection.clone().unwrap();
+    assert!(
+        d.score.precision_pct() < 50,
+        "alerting on everything scored {}% precision",
+        d.score.precision_pct()
+    );
+    assert!(!d.score.is_quiet_on_benign());
+    assert!(!o.flag(None).unwrap().earned);
+    // Loud is not the same as dishonest: every citation still holds.
+    assert!(d.evidence_checks);
+}
+
+/// A composition is a string a learner could have saved, and it scores the same
+/// on the next run (`DESIGN.md` §3).
+#[test]
+fn a_composed_rule_set_scores_the_same_on_every_run() {
+    use odr_scenario::RuleSetSpec;
+
+    let text = "posture;downgrade:require_same_identity=0;keyset";
+    let a =
+        run::score_module_5_composed(DrillId::new(5, 1), SEED, &RuleSetSpec::parse(text).unwrap())
+            .unwrap();
+    let b =
+        run::score_module_5_composed(DrillId::new(5, 1), SEED, &RuleSetSpec::parse(text).unwrap())
+            .unwrap();
+    assert_eq!(
+        a.facts.detection.clone().unwrap().report,
+        b.facts.detection.clone().unwrap().report
+    );
+    assert_eq!(
+        a.facts.detection.unwrap().score,
+        b.facts.detection.unwrap().score
+    );
+}
+
+/// Composing is not a way round the answer key. An empty set catches nothing,
+/// and the honest floor stays the floor.
+#[test]
+fn an_empty_composition_earns_nothing() {
+    use odr_scenario::RuleSetSpec;
+
+    let o = run::score_module_5_composed(DrillId::new(5, 1), SEED, &RuleSetSpec::empty("mine"))
+        .unwrap();
+    let d = o.facts.detection.clone().unwrap();
+    assert_eq!(d.report.len(), 0);
+    assert_eq!(d.score.recall_pct(), 0);
+    assert!(d.score.is_quiet_on_benign());
+    assert!(!o.flag(None).unwrap().earned);
+}
+
 #[test]
 fn drill_5_3_the_keyset_is_reported_and_reported_as_undecidable() {
     let o = earned(5, 3);

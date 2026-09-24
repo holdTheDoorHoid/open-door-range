@@ -1189,3 +1189,16 @@ pub fn score_module_5(drill_id: DrillId, seed: u64, rules: &RuleSet) -> Result<O
         facts,
     })
 }
+
+/// **Score a rule set the learner composed**, which is what drill 5.2 asks for.
+///
+/// The same day, the same answer key and the same scorer as
+/// [`score_module_5`]: composing a rule set buys a learner control over which
+/// rules run and how they are tuned, and buys them no indulgence at all.
+pub fn score_module_5_composed(
+    drill_id: DrillId,
+    seed: u64,
+    spec: &odr_detect::RuleSetSpec,
+) -> Result<Outcome> {
+    score_module_5(drill_id, seed, &spec.build())
+}

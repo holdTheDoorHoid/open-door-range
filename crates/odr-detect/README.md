@@ -63,6 +63,7 @@ cargo clippy -p odr-detect --all-targets -- -D warnings
 | `observe` | `Monitor`, `Observation` — the governing rule, as a type |
 | `finding` | `Finding`, `Signal`, `Severity`, `Confidence`, `Evidence`, `FrameRef`, `Report` |
 | `detector` | the `Detector` trait and `RuleSet` — one rule, and a learner's answer |
+| `catalog` | `RuleSpec`, `RuleParam`, `RuleSetSpec` — the selectable rules and their parameters, as data an interface can draw |
 | `rules` | the eight detectors, one module each |
 | `scenario` | `generate_day` — a day of mixed traffic and its answer key, kept apart |
 | `score` | `AnswerKey`, `Expected`, `Verdict`, `Score` — true and false positives, time to detection |
@@ -157,6 +158,64 @@ byte-identical to an earlier one **and that nothing asked for** — the command 
 should be answering had already been answered. Two bits of sequence was never an
 anti-replay measure, and `two_bits_of_sequence_make_byte_identical_frames_worthless_on_their_own`
 is the test that pins what that costs a defender.
+
+## Composing a rule set — what drill 5.2 actually asks for
+
+`docs/CURRICULUM.md` drill 5.2 says **build** a detection rule, not pick one:
+
+> Build a detection rule that catches the downgrade and does not fire on a
+> genuine legacy reader being added to the bus.
+
+`RuleSet` is a list of trait objects, which is the right shape for running
+detectors and the wrong shape for a learner to hold: it cannot be named,
+serialised, compared to a preset, or drawn as a form. `catalog` is the shape
+that can.
+
+```rust
+use odr_detect::catalog::RuleSetSpec;
+
+let mut mine = RuleSetSpec::standard();      // start from the worked answer
+mine.set_param("downgrade", "require_same_identity", 0)?;   // change one thing
+let report = mine.build().run(&monitor);     // and run it
+```
+
+A `RuleSpec` carries a stable id, a label, **one line on what the rule catches
+and one line on what it will false-positive on**, the signals it can emit, and
+its tunable parameters with their legal ranges. That second line is not a
+footnote: the second question every detector in this crate answers is *can it be
+seen without firing on benign traffic*, and a learner choosing rules needs that
+answer before they choose rather than after they score.
+
+Three properties the suite pins down:
+
+- **The catalogue describes the detectors that exist.** Every entry builds a
+  detector whose own `name()` and `signals()` match the spec, so a control drawn
+  from this table cannot be a control that changes nothing.
+- **The presets are built from the same parts.** `RuleSetSpec::standard()`
+  produces exactly the detectors `RuleSet::standard()` does, asserted by running
+  both over a whole generated day and comparing the reports. That is what makes
+  "start from standard and change one thing" a real workflow rather than a
+  second code path.
+- **Each rule changes the score in the way it claims.** Removing any one rule
+  from the standard set loses findings, and every finding lost carries one of
+  that rule's own signals.
+
+A composition round-trips through one line of text —
+`posture;downgrade:require_same_identity=0` — with defaults omitted, so a set
+that changed one thing reads as one thing changed. Rules are held in catalogue
+order however they were selected, so two learners who chose the same rules in
+different orders hold equal compositions. An unknown rule, an unknown parameter
+or a value outside the declared range is a `DetectError::Rule` naming the rule,
+the parameter and the legal range — never something quietly dropped, because a
+learner whose rule was silently discarded would be scored on a set they did not
+build.
+
+**Composing buys control, not indulgence.** There is no second scoring path: a
+composed set is built into an ordinary `RuleSet` and handed the same capture and
+the same key, so
+`a_composed_set_tuned_to_alert_on_everything_scores_badly` — every threshold
+dragged to its loudest legal value — still lands under 20% precision, fires on
+the named benign events repeatedly, and is asserted to do so.
 
 ## What is **not** detectable, and why
 
@@ -274,9 +333,16 @@ false-positive ones, where a detector is run against traffic built specifically 
 break it, and `a_rule_set_that_alerts_on_everything_scores_badly`, which checks
 that the scorer can tell a good rule set from a loud one.
 
+The rule editor changes who runs that second kind of test. A learner who starts
+from `standard`, turns the downgrade rule's identity check off and runs it does
+not read "100% is suspicious" in a README — they watch precision fall to 91%
+and read the false positive back as *a reader was replaced with a legacy model
+at the same address*. The number that teaches something is the one the learner
+broke.
+
 ## Tests
 
-`cargo test -p odr-detect` → **57 unit tests + 4 doctests**, all passing.
+`cargo test -p odr-detect` → **67 unit tests + 5 doctests**, all passing.
 `cargo clippy -p odr-detect --all-targets -- -D warnings` is clean, as are
 `cargo fmt` and `RUSTDOCFLAGS="-D warnings" cargo doc -p odr-detect --no-deps`.
 
@@ -295,6 +361,13 @@ rest:
   because an empty payload has nothing to encrypt.
 - **Admissions of blindness.** Where an attack is genuinely invisible, a test
   asserts the silence.
+- **The catalogue against the detectors.** Every selectable rule builds a
+  detector whose own name and signals match the spec; the composed `standard`
+  set produces a report identical to the hand-written preset's; removing any one
+  rule loses findings carrying only that rule's signals; and a composition
+  round-trips through its encoding. These are what stop the rule editor
+  offering a control that changes nothing, or a bound the detector does not
+  actually enforce.
 
 ## Things I was not certain about
 
@@ -341,3 +414,24 @@ rest:
    is obviously right until somebody wants an inventory of which readers are
    still on SCBK-D. `trust_capability_claim` does not currently express that
    distinction.
+
+9. **The parameter ranges in `catalog` are judgement, not measurement.** They are
+   wide enough to let a learner be obviously wrong on purpose — `min_frames` of
+   1, a 600-second replay window — because watching a badly tuned rule score
+   badly is the lesson, and narrow enough to keep a browser tab responsive. A
+   different bench might want tighter ones. What they are *not* is a claim about
+   what a real deployment should be set to.
+
+10. **Every parameter is one `u64`.** Flags are 0 and 1, counts are counts,
+    durations are microseconds. That keeps a composition exactly reproducible
+    across the wasm boundary — `DESIGN.md` §3 — at the cost of a parameter that
+    genuinely wanted a fraction or an enum having nowhere to go. Nothing in the
+    eight detectors wants one today. The first rule that does will need the
+    catalogue to grow a kind rather than the existing kinds to be bent.
+
+11. **A composed set is named, and the name is not part of it.** Two
+    compositions that run the same detectors with the same tuning compare equal
+    whatever they are called, and the encoding does not carry the name. That is
+    what makes "you are running the standard set" a checkable statement rather
+    than a label somebody typed — but it does mean a learner cannot save two
+    differently-named copies of the same set and have them stay distinct.

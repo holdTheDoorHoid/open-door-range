@@ -21,6 +21,12 @@
 //! [`RuleSet::standard`] is the worked one, and a learner builds their own with
 //! [`RuleSet::with`].
 //!
+//! A `RuleSet` is a list of trait objects, which is the right shape for running
+//! detectors and the wrong shape for a learner to *hold*: it cannot be named,
+//! serialised, compared to a preset or drawn as a form. [`catalog`](crate::catalog)
+//! is the shape that can, and [`RuleSetSpec::build`](crate::catalog::RuleSetSpec::build)
+//! is the one-way door between them.
+//!
 //! ```
 //! use odr_detect::{Monitor, RuleSet};
 //!
@@ -109,6 +115,26 @@ impl RuleSet {
             .with(Box::new(rules::ReplayDetector::default()))
             .with(Box::new(rules::WireDetector::default()))
             .with(Box::new(rules::TrafficDetector::default()))
+    }
+
+    /// **The strict-downgrade preset**: posture, keys, keyset, and the
+    /// downgrade rule with its identity check turned off.
+    ///
+    /// It catches the identity-spoofing variant of curriculum 3.6 — an implant
+    /// that rewrites `REPLY_PDID` as well as `REPLY_PDCAP`, which costs the
+    /// attacker nothing — and it alerts on every reader swap in the building.
+    /// Both halves of that trade are asserted in the suite, so a learner meets
+    /// the price rather than being told about it.
+    ///
+    /// The same set is reachable as
+    /// [`RuleSetSpec::strict`](crate::catalog::RuleSetSpec::strict), and the
+    /// suite asserts the two build identical detectors.
+    pub fn strict() -> RuleSet {
+        RuleSet::empty("strict downgrade")
+            .with(Box::new(rules::PostureDetector::default()))
+            .with(Box::new(rules::KeyDetector::default()))
+            .with(Box::new(rules::KeysetDetector::default()))
+            .with(Box::new(rules::DowngradeDetector::strict()))
     }
 
     /// Add a detector.

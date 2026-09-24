@@ -75,6 +75,7 @@ could reproduce a bug from.
 | `bench` | one run of a bench, projected into frames, markers and state |
 | `config` | the collapsible groups: `odr-scenario`'s option list, plus the values the built bench reports |
 | `submit` | the typed claims seven drills take, and the form for them |
+| `rules` | Module 5's rule catalogue and its scored report, as JSON the site renders |
 | `lib` | the `#[wasm_bindgen]` surface itself |
 
 ## How the contract maps
@@ -91,6 +92,7 @@ could reproduce a bug from.
 | §9 `flag` | `Engine::flag` | `Outcome::flag` — untouched |
 | §9 submissions | `submit::spec`, `submit::parse` | `odr_scenario::Submission` |
 | §10 tasks | `Engine::task_states` | `Outcome::task_states` |
+| §13 `ruleCatalog`, `setRules`, `detection` | `rules::catalog`, `Engine::set_rules`, `Engine::detection` | `odr_detect::catalog::RULES` + `module5::run_composed` |
 
 ### Everything is synchronous after boot
 
@@ -129,6 +131,31 @@ reconstructed from the captured handshake actually decrypts the frame. On drill
 drill 4.1, whose predicate insists the attacker held no key at any point, every
 payload stays sealed and the traffic-analysis lesson survives
 (`a_recovered_key_opens_the_payload_and_nothing_else_does`).
+
+### The rule editor publishes parts, not a menu
+
+`site/ENGINE-API.md` §13. `docs/CURRICULUM.md` drill 5.2 asks a learner to
+**build** a detection rule, so `Engine::rule_catalog` hands the site
+`odr_detect::catalog::RULES` — every selectable rule with its label, the line
+saying what it catches, the line saying what it will false-positive on, and
+every parameter with the bounds the detector itself enforces. **The site
+hardcodes no rule, no default and no bound**, which is the same discipline §3's
+option list already keeps: a bound the site invented would be a second opinion
+about what the engine accepts.
+
+`Engine::set_rules` parses a composition, refuses one that names an unknown rule
+or an out-of-range value *in the engine's own words*, and re-runs the day.
+`Engine::detection` renders `odr_detect::Score` with each finding's evidence
+attached: the frames that justify it, their timestamps and their octets, plus
+the benign event any false positive landed on. A score without its reasoning
+teaches a learner to chase a number, and the whole argument of `odr-detect`'s
+README is that a finding is checkable.
+
+Two caps, both stated in the JSON rather than applied silently: at most 60
+findings per list and 8 cited frames per finding, with the **full** counts
+carried in `score`. A rule set dragged to its loudest legal tuning produces
+several hundred findings on the default day, and `docs/UI.md`'s rule is
+collapse, never remove — so the interface can say "60 of 716 shown".
 
 ## Measured
 
@@ -195,12 +222,18 @@ Roughly in order of how much they would matter if they turned out wrong.
    the genuine bar crawls with a date on it, which is the half that teaches —
    but the theatre of the fast one completing is gone.
 
-5. **Module 5's rule set is a choice of three, not a rule set the learner
-   wrote.** `odr-detect`'s `RuleSet` is a list of trait objects; there is no
-   value a form can produce. The three are "nothing at all", the standard set,
-   and the strict downgrade rule, and choosing between them is a real question
-   with a real answer — 5.2 is precisely about the strict one's false
-   positives. It is still a menu rather than a rule editor.
+5. **Module 5's rule set is composed now, and the three presets are still
+   there.** This entry used to read "a choice of three, not a rule set the
+   learner wrote", and that was the biggest gap between the written curriculum
+   and what existed: drill 5.2 says *build* a rule. `odr-detect` grew a
+   catalogue — the rules as data, with their parameters and bounds — so a form
+   can produce one after all, and §13 carries it. The presets survive as
+   starting points, which is what "start from standard and change one thing"
+   needs. What I am **not** certain of is the granularity: the catalogue
+   exposes the parameters the detector structs already had, and those were
+   chosen as tuning knobs rather than as teaching material. `require_same_identity`
+   is exactly drill 5.2's lesson; `max_evidence` is housekeeping a learner has
+   no reason to touch, and it is offered beside it with equal weight.
 
 6. **The submission forms are my reading of what each predicate wants.**
    `odr-scenario` names the shape in prose (`Drill::submission`) and the typed
@@ -239,6 +272,23 @@ Roughly in order of how much they would matter if they turned out wrong.
     the site does re-select by id after one. In practice the selection is
     cleared on a bench change, so this has not bitten; it would if a future
     version tried to keep it.
+
+
+12. **The rule editor is drawn by a file this crate does not own.**
+    `site/js/ui/ruleeditor.js` renders the catalogue, and
+    `site/js/engine-wasm.js` — the thin JS wrapper — does not yet forward
+    `ruleCatalog`, `setRules` and `detection`, and still exports
+    `ENGINE_API_VERSION = 3` while this crate exports 4. The editor falls
+    through to the wasm object the wrapper holds until three forwarding methods
+    are added there. Nothing is broken by it and it is the first thing to tidy.
+
+13. **The detail caps are a guess.** 60 findings per list and 8 cited frames per
+    finding were chosen so a pathologically loud rule set stays well under a
+    megabyte of JSON. The number that actually matters is how much a learner
+    needs to see to understand *why* their set fired, and I do not know what
+    that number is — 60 is comfortably more than any sensible rule set produces
+    on the default day and comfortably less than the 716 false positives a
+    deliberately bad one does.
 
 ## Ethics
 
