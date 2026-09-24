@@ -402,11 +402,88 @@ fn every_group_has_a_summary_line() {
 }
 
 #[test]
-fn setting_a_field_is_refused_with_a_reason() {
-    let e = Engine::new();
-    let r = e.set_config("security", "enabled", "true");
-    assert!(r.contains("\"ok\":false"));
-    assert!(r.contains("fixed by this drill's bench"), "{r}");
+fn an_option_this_bench_cannot_express_is_refused_with_a_reason() {
+    // Drill 1.1 is a Wiegand pair. There is no Secure Channel to turn on, and
+    // the refusal has to say so rather than discarding the input.
+    let mut e = Engine::new();
+    e.load_drill("1.1", "bronze");
+    let r = e.set_config("security", "secureChannel", "required");
+    assert!(r.contains("\"ok\":false"), "{r}");
+    assert!(r.contains("Wiegand"), "{r}");
+    assert!(r.contains("cryptography"), "{r}");
+}
+
+#[test]
+fn setting_an_option_rebuilds_the_bench_and_bumps_the_version() {
+    let mut e = Engine::new();
+    e.load_sandbox(Some(String::from("osdp-clear")));
+    let before = e.version();
+    let plain = e.frames(0.0, 1.0e12, false, None, 0.0);
+    let r = e.set_config("security", "secureChannel", "if-available");
+    assert!(r.contains("\"ok\":true"), "{r}");
+    assert!(e.version() > before, "a rebuild has to bump the version");
+    assert_ne!(
+        plain,
+        e.frames(0.0, 1.0e12, false, None, 0.0),
+        "turning Secure Channel on changes the bus"
+    );
+    assert!(
+        e.config_groups().contains("\"value\":\"if-available\""),
+        "the groups report what the bench was built with"
+    );
+    // And back again, by the one move that does not require remembering.
+    let r = e.reset_config();
+    assert!(r.contains("\"ok\":true"), "{r}");
+    assert_eq!(
+        plain,
+        e.frames(0.0, 1.0e12, false, None, 0.0),
+        "reset returns the scenario's own bench"
+    );
+}
+
+#[test]
+fn the_same_options_give_the_same_bytes_across_a_rebuild() {
+    let mut a = Engine::new();
+    a.load_sandbox(Some(String::from("osdp-clear")));
+    a.set_config("security", "secureChannel", "required");
+    a.set_config("security", "key", "weak");
+    a.set_config("link", "baud", "19200");
+
+    let mut b = Engine::new();
+    b.load_sandbox(Some(String::from("osdp-clear")));
+    // A different order, and the middle one set twice.
+    b.set_config("link", "baud", "38400");
+    b.set_config("security", "key", "weak");
+    b.set_config("link", "baud", "19200");
+    b.set_config("security", "secureChannel", "required");
+
+    assert_eq!(
+        a.frames(0.0, 1.0e12, false, None, 0.0),
+        b.frames(0.0, 1.0e12, false, None, 0.0)
+    );
+}
+
+#[test]
+fn a_setting_that_breaks_the_drill_is_applied_and_warned_about() {
+    // docs/UI.md: warn rather than block.
+    let mut e = Engine::new();
+    e.load_drill("3.2", "bronze");
+    let r = e.set_config("security", "secureChannel", "off");
+    assert!(r.contains("\"ok\":true"), "{r}");
+    assert!(r.contains("\"warning\":"), "{r}");
+    assert!(r.contains("cannot be earned"), "{r}");
+    assert!(!e.flag().contains("\"earned\":true"));
+}
+
+#[test]
+fn loading_a_drill_forgets_the_options() {
+    let mut e = Engine::new();
+    e.load_sandbox(Some(String::from("osdp-clear")));
+    e.set_config("security", "secureChannel", "required");
+    e.load_drill("2.2", "bronze");
+    let groups = e.config_groups();
+    assert!(groups.contains("\"value\":\"off\""), "{groups}");
+    assert!(!groups.contains("\"changed\":true"));
 }
 
 #[test]

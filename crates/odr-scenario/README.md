@@ -9,11 +9,11 @@ the guidance a learner reads at each band, and the predicate that decides
 whether each flag is earned.
 
 ```
-ScenarioId ──build──▶ Bench ──solve──▶ Outcome ──evaluate──▶ Flag
-                                │                    ▲
-                                ├── Knowledge ───────┤
-                                ├── Facts ───────────┤
-                                    Submission ──────┘
+ScenarioId ──build_with──▶ Bench ──solve_with──▶ Outcome ──evaluate──▶ Flag
+     ▲                        │                          ▲
+BenchOptions                  ├── Knowledge ─────────────┤
+                              ├── Facts ─────────────────┤
+                                  Submission ────────────┘
 ```
 
 ```
@@ -32,6 +32,66 @@ cargo clippy -p odr-scenario --all-targets -- -D warnings
   workspace is `Task::state(elapsed_ms)`, which drives drill 4.2's crawling
   progress bar and touches nothing a flag depends on.
 - **No panics.** Everything fallible returns `ScenarioError`.
+
+## The bench is a sandbox: `BenchOptions`
+
+`DESIGN.md` §4 decided "sandbox with drills layered on top" — one live bench,
+always pokeable, with the course driving that same bench. [`options`] is the
+seam that makes that true. It answers four questions for a given scenario:
+
+| Question | Answer |
+|---|---|
+| what can be changed here? | `options::accepted(scenario)` — the lists differ, and `options::describe` returns them with kind, current value, legal values and a line on what each does |
+| what is it set to now? | `options::defaults(scenario)`, overridden by the learner's `BenchOptions` |
+| what will this cost the drill that is loaded? | `OptionSpec::warning` — a sentence, **not** a refusal |
+| what can this bench not do at all? | `options::apply` refuses with `ScenarioError::OptionRefused`, and `options::unsupported_reason` is the same sentence for a field the interface still has to *show* |
+
+```rust
+use odr_scenario::options::{self, BenchOptions};
+use odr_scenario::{run, DrillId, ScenarioId};
+
+// The same bench, with the downgrade's defence turned on.
+let mut opts = BenchOptions::default();
+options::apply(ScenarioId::OsdpRequiredSc, &mut opts, options::TRUST_PDCAP, "false").unwrap();
+let out = run::solve_with(DrillId::new(3, 6), 0xC0FFEE, &opts).unwrap();
+assert!(!out.flag(None).unwrap().earned);   // the downgrade is refused
+
+// Secure Channel on a Wiegand pair is not a setting, and says so.
+let mut opts = BenchOptions::default();
+let err = options::apply(ScenarioId::WiegandDoor, &mut opts, options::SECURE_CHANNEL, "required")
+    .unwrap_err();
+assert!(format!("{err}").contains("no Secure Channel on a Wiegand"));
+```
+
+**Every field of `BenchOptions` is an override, and `default()` sets none.** Each
+scenario's own settings live in `options::defaults`, transcribed from what its
+builder already hardcoded, so an unmodified build draws from the seeded RNG in
+exactly the order it always did. `defaults_reproduce_every_bench_byte_for_byte`
+and `defaults_reproduce_every_drill_byte_for_byte` assert that against
+`World::export_capture`, for every scenario and every drill.
+
+### Refuse the impossible; warn about everything else
+
+A drill **never** narrows the option set. Turning Secure Channel off under drill
+3.2 is allowed; the option comes back carrying
+
+> This drill is about attacking a secure channel. With Secure Channel off there
+> is no handshake to capture, and the flag cannot be earned.
+
+and the bench builds. Two reasons for choosing that over refusing. `docs/UI.md`
+records the owner's feedback as **prefer warning over blocking**. And `odr-bus`'s
+controller docs say both settings of `trust_pdcap` are modelled "so a drill can
+run the attack and then run the fix and see it hold" — a drill that refused its
+own defence setting would forbid precisely the exercise the engine exists for,
+and drill 5.2 is *about* detecting the difference. Free play is therefore not a
+wider set than a drill; it is the same set with nothing to warn about.
+
+One consequence worth naming. An attacker actor on a bench its attack cannot run
+on returns `Attack(Exhausted { … })`, which is a failure on an unmodified bench
+and *not* one on a reconfigured one. `solve_with` falls back to `baseline_with`
+when — and only when — the options are non-default, so the learner gets an
+unearned flag with its `outstanding` list rather than an error page, and a
+genuine engine bug on a stock bench still surfaces as an error.
 
 ## The drill model
 
@@ -176,8 +236,9 @@ from `BruteForcer::us_per_credential`.
 
 ## Test coverage
 
-`cargo test -p odr-scenario` → **13 unit tests + 49 integration tests + 1
-doctest**, all passing. `cargo test --workspace` is green.
+`cargo test -p odr-scenario` → **13 unit tests + 49 curriculum integration
+tests + 26 option integration tests + 1 doctest**, all passing.
+`cargo test --workspace` is green.
 `cargo clippy -p odr-scenario --all-targets -- -D warnings` is clean, as are
 `cargo fmt` and `RUSTDOCFLAGS="-D warnings" cargo doc -p odr-scenario --no-deps`.
 
@@ -219,6 +280,28 @@ Plus catalogue structure (29 drills, 6+6+4+6+4+3, curriculum order, every
 scenario reachable, every scenario buildable), determinism (same seed → same
 capture, same flag, same evidence), and the two band invariants.
 
+`tests/options.rs` covers the seam in four groups:
+
+- **defaults are today's benches** — byte-identical captures for every scenario
+  and every drill, and the `options::defaults` table checked against the bench
+  each builder actually produces;
+- **every option changes the simulation**, tested against the capture or the
+  flag rather than against the config struct: Secure Channel on puts a handshake
+  on a bus that had none and off takes it away; the key option decides whether
+  3.2 and 3.3 are winnable; distrusting the capability reply stops 3.6's
+  downgrade; install mode off stops 3.4's key being handed out; a reader that
+  claims no crypto is talked to in the clear; the null cipher decides 4.4; the
+  MAC width is what 4.2's forger *measures*; the line rate and the poll interval
+  move the bus timing and the frame count; the wire protocol moves a Wiegand
+  door onto clock-and-data and the door still opens; the format changes the
+  width on the wire from 26 bits to 37;
+- **refusal with a reason** — Secure Channel on a Wiegand pair, a wire protocol
+  on a bus, a value outside the declared set (the error lists the legal ones),
+  and the two scenarios that accept nothing;
+- **determinism** — the same options and seed give the same bytes on a rebuild,
+  setting order does not matter, and a different option really is a different
+  bench.
+
 ## The one thing in the curriculum that could not be implemented faithfully
 
 **Drill 4.4's flag says "attacker reads a card number from a
@@ -245,7 +328,16 @@ reply-direction half starts working the moment that field exists.
 
 Roughly in order of how much they would matter if they turned out wrong.
 
-1. **Drill 2.4's flag says "the learner recovers a desynchronised link".** In
+1. **The option set is my reading of what each bench plausibly supports.**
+   Twelve options on a full OSDP bench, three on a legacy pair, one on a card
+   bench. Two are judgement calls. `linkType` is offered only on the Module 1
+   benches, because `WiegandDoor` and `ClockDataDoor` are structurally the same
+   door and the OSDP benches are not; a different reading would have made it a
+   scenario switch instead. And the `key` option on `OsdpCommissioning` means
+   the key the *controller* pushes — the reader stays on SCBK-D whatever it is
+   set to, because "a fresh reader out of the box" is that bench's premise.
+
+2. **Drill 2.4's flag says "the learner recovers a desynchronised link".** In
    this engine the *controller* recovers it: it restarts from sequence zero
    when the peripheral NAKs, with no learner action. The predicate therefore
    checks the checkable thing — a sequence fault really happened, the same
@@ -255,7 +347,7 @@ Roughly in order of how much they would matter if they turned out wrong.
    the drill is meant to require an action, `odr-bus` would need a controller
    that does *not* self-resynchronise, and that is a change to another crate.
 
-2. **"Predict it before the engine sends it" is not enforced by the engine.**
+3. **"Predict it before the engine sends it" is not enforced by the engine.**
    Drills 0.3 and 3.1 both say "before", and a `Submission` carries no
    timestamp — nothing here can tell a prediction from a transcription. The
    ordering is the interface's to enforce (take the submission, *then* run),
@@ -263,12 +355,12 @@ Roughly in order of how much they would matter if they turned out wrong.
    this matters more than it looks, the fix is a submission that carries the
    world's `now()` at the moment it was taken.
 
-3. **Module 5's bands are my judgement, not the curriculum's.**
+4. **Module 5's bands are my judgement, not the curriculum's.**
    `docs/CURRICULUM.md` gives 5.1–5.3 no band; I made all three Silver, which
    matches their shape (an objective plus a sandbox). Their titles are also
    mine — the curriculum states them as questions rather than naming them.
 
-4. **Drill 5.1's predicate is "everything in the answer key, nothing
+5. **Drill 5.1's predicate is "everything in the answer key, nothing
    invented"**, not a typed list of which Module 3 attacks are visible. The
    curriculum asks "which of the four attacks in module 3 are visible to a
    passive monitor at all?" and the flag line for the module is about scoring a
@@ -278,14 +370,14 @@ Roughly in order of how much they would matter if they turned out wrong.
    absent because it produces no observable at all. A future revision might want
    a typed "visible / not visible" submission instead.
 
-5. **The 100% precision and recall in drill 5.1's evidence inherits
+6. **The 100% precision and recall in drill 5.1's evidence inherits
    `odr-detect`'s own caveat.** That crate's README says to read the number with
    suspicion: the answer key and the standard detectors were written by the same
    hand. The parts of Module 5 that are independent evidence are the
    false-positive cases — and drill 5.2's negative test, which runs the strict
    downgrade rule and asserts it fires on a benign reader swap, is one of them.
 
-6. **Drill 1.5's bench enrols a low card number on purpose.** A sweep that
+7. **Drill 1.5's bench enrols a low card number on purpose.** A sweep that
    starts at zero has to reach the enrolled credential inside a browser tab, so
    `WiegandSweep` draws a card number in 0..=63. Low card numbers are real —
    sites number from 1 — but the reason *this* bench has one is the tab. The
@@ -293,62 +385,62 @@ Roughly in order of how much they would matter if they turned out wrong.
    space at the bench's own timing, so the number is not affected; only the
    demonstration is.
 
-7. **Drill 4.1's "simulated day" is 36 seconds of bus carrying seven
+8. **Drill 4.1's "simulated day" is 36 seconds of bus carrying seven
    badge-ins.** The limit is the screen, not the engine: a real day at 9600 baud
    is a few hundred thousand frames and the honest-by-default timeline would
    have to render all of them. Nothing in the predicate changes if the day gets
    longer.
 
-8. **Drill 2.1 asks for byte offsets, and the sequence number has none.** The
+9. **Drill 2.1 asks for byte offsets, and the sequence number has none.** The
    curriculum lists "sequence number" beside SOM, address, length and CRC, but
    it lives in the bottom two bits of the control byte. It is carried as a
    derived value on `FrameLayout` and named in the guidance rather than being a
    submittable span. The submitted set is every field the frame actually has,
    mark byte excepted.
 
-9. **Drill 0.2's flag depends on a `SourceId` convention.** The victim's token
-   is `SourceId(0)` and the attacker's blank is `SourceId(7)`, and the predicate
-   asserts that nothing presented at the reader was `SourceId(0)`. `SourceId` is
-   load-bearing by design in `odr-bus`, but the specific numbering is this
-   crate's, and a scenario that presented a third token would need the predicate
-   widened.
+10. **Drill 0.2's flag depends on a `SourceId` convention.** The victim's token
+    is `SourceId(0)` and the attacker's blank is `SourceId(7)`, and the predicate
+    asserts that nothing presented at the reader was `SourceId(0)`. `SourceId` is
+    load-bearing by design in `odr-bus`, but the specific numbering is this
+    crate's, and a scenario that presented a third token would need the predicate
+    widened.
 
-10. **`site/ENGINE-API.md` §4 says at most one tap per link; drill 4.3 needs
+11. **`site/ENGINE-API.md` §4 says at most one tap per link; drill 4.3 needs
     two.** The IV-reuse attack is an inline implant *and* a passive analyser on
     the same pair, which is what a real operator has and what `odr-bus` allows.
     The drill's `taps` list both. Either the site's constraint needs loosening
     for that drill or the UI needs a way to show two boxes on one cable.
 
-11. **Drill 1.2 has its own bench rather than sharing 1.1's.** The curriculum
+12. **Drill 1.2 has its own bench rather than sharing 1.1's.** The curriculum
     says "watch the panel accept a different badge", and the flag as written
     only requires a parity-valid frame carrying an unpresented number — which
     would be satisfied without any grant. `WiegandParityFlip` enrols the card
     number one bit away from the one presented, so both the prose and the flag
     hold. That is an interpretation, and it is the generous one.
 
-12. **Drill 0.4 recovers three sectors, not sixteen.** Enough to show it is not
+13. **Drill 0.4 recovers three sectors, not sixteen.** Enough to show it is not
     a fluke, at about the same cost per sector. The full sixteen is the same
     loop and roughly five times the run time.
 
-13. **Drill 3.5 inherits `KeysetCapturer`'s assumption** that the last handshake
+14. **Drill 3.5 inherits `KeysetCapturer`'s assumption** that the last handshake
     for an address is the site-key one. `odr-attack`'s README flags it, and
     `odr-bus`'s flags the commissioning ordering as unverified against real
     hardware. If a real controller waits for the next reset rather than
     re-handshaking, the capture has to be split differently and this drill's
     second half moves.
 
-14. **`Task::projected` is a duration, not a date.** `site/ENGINE-API.md` shows
+15. **`Task::projected` is a duration, not a date.** `site/ENGINE-API.md` shows
     "8.5 years — 27 March 2035". This engine has no wall clock and no epoch, so
     it produces the duration and the date is the site's to render. Inventing an
     epoch here to print a date would be the engine claiming to know something it
     does not.
 
-15. **`Outcome::engine_answer` is a spoiler by construction.** It exists because
+16. **`Outcome::engine_answer` is a spoiler by construction.** It exists because
     the test suite has to submit a correct answer without writing one down, and
     it is derived from the run rather than stored — but it is still the answer,
     and a front end should not put it behind a button labelled "hint".
 
-16. **The `Facts` struct is wide.** Fourteen optional fields, most of them used
+17. **The `Facts` struct is wide.** Fourteen optional fields, most of them used
     by one drill. The alternative was a trait object per drill, which would have
     moved the predicates out of one readable file and into twenty-nine small
     ones. If a third of the curriculum changes shape this is the thing to

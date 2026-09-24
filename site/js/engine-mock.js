@@ -11,10 +11,11 @@
  *
  *        import { createEngine } from './engine-mock.js';
  *
- * It implements ENGINE_API_VERSION 1. The contract is now at 2 — see the
- * "What changed in version 2" section of ../ENGINE-API.md for the five
- * differences; the site tolerates both, because every v2 addition is either a
- * new call the site checks for or a field it renders when present.
+ * It implements ENGINE_API_VERSION 3. What it does NOT implement is the v2
+ * submission API (§9) — the mock approximates those predicates by watching
+ * which field you opened in the decode tree, which is the thing the real
+ * engine could not do and the reason that API exists. The site checks for each
+ * of those calls before making it, so both engines run.
  *
  * If you change a shape here, change it in ../ENGINE-API.md first.
  *
@@ -26,7 +27,7 @@
  */
 
 export const ENGINE_KIND = 'mock';
-export const ENGINE_API_VERSION = 1;
+export const ENGINE_API_VERSION = 3;
 
 /* ------------------------------------------------------------------ *
  * Bytes
@@ -904,7 +905,7 @@ const MODULES = [
         summary: 'A controller left in install mode. Ask it for the key. It tells you.',
         objective: 'Hold the SCBK, having sent nothing but legitimate protocol requests.',
         flagText: 'Attacker holds the SCBK and the only frames it sent were legitimate protocol requests.',
-        predicate: { kind: 'config', group: 'controller', field: 'installMode', value: true },
+        predicate: { kind: 'config', group: 'controller', field: 'acuInstallMode', value: true },
         hints: ['Install mode is in the controller panel. Turn it on and watch what becomes askable.'],
       }),
       d('3.5', 'Keyset capture', 'silver', {
@@ -999,66 +1000,148 @@ for (const m of MODULES) for (const dr of m.drills) DRILL_INDEX.set(dr.id, Objec
  * Bench configuration
  * ------------------------------------------------------------------ */
 
+/*
+ * The bench options, as ENGINE-API.md v3 describes them.
+ *
+ * The ids and the legal values are the same ones odr-scenario's option list
+ * uses, because this file is the readable statement of what that contract
+ * means. `fixed` marks the two kinds of field that are not controls: a value
+ * read off the bench that was built, and a setting this bench genuinely cannot
+ * express — which is still SHOWN, because docs/UI.md's rule is collapse, never
+ * remove.
+ */
+
+const FORMAT_CHOICES = [
+  ['h10301', 'H10301 — 26-bit, 8-bit facility code'],
+  ['h10306', 'H10306 — 34-bit, 16-bit facility code'],
+  ['c1k35s', 'Corporate 1000 — 35-bit, interleaved parity'],
+  ['h10304', 'H10304 — 37-bit with a facility code'],
+  ['h10302', 'H10302 — 37-bit, no facility code'],
+];
+
+const NO_CRYPTO_HERE =
+  'There is no Secure Channel on a Wiegand or clock-and-data pair. Neither protocol has any '
+  + 'cryptography in its specification — that absence is the whole of Module 1, and there is '
+  + 'nothing here to turn on.';
+const NO_BUS_HERE =
+  'A Wiegand pair is not a bus: nothing polls it, and its rate is the reader\'s own pulse timing '
+  + 'rather than a line rate.';
+const NOT_A_PAIR =
+  'This bench is an RS-485 multidrop bus. The Wiegand and clock-and-data pairs are Module 1\'s '
+  + 'benches — swapping one for the other is not a setting, it is a different door.';
+const READ_OFF_THE_BENCH =
+  'Read off the bench that was built. This is what the simulation did, not a control.';
+
 function defaultConfig() {
   return {
     card: {
       id: 'card', title: 'Credential', node: 'card',
       fields: [
-        { id: 'type', label: 'Type', type: 'select', value: 'em4100', options: [['em4100', 'EM4100 125 kHz'], ['h10301', 'HID Prox H10301'], ['mifare', 'MIFARE Classic 1K'], ['desfire', 'DESFire EV2']], help: 'What the tag is. The first three have no meaningful authentication.' },
-        { id: 'facility', label: 'Facility code', type: 'number', value: 42, min: 0, max: 255, help: 'Shared across the site.' },
-        { id: 'number', label: 'Card number', type: 'number', value: 24601, min: 0, max: 65535, help: '' },
+        { id: 'type', label: 'Type', type: 'select', value: 'em4100', fixed: true, fixedReason: READ_OFF_THE_BENCH, options: [['em4100', 'EM4100 125 kHz'], ['h10301', 'HID Prox H10301'], ['mifare', 'MIFARE Classic 1K'], ['desfire', 'DESFire EV2']], help: 'What the tag is. The first three have no meaningful authentication.' },
+        { id: 'values', label: 'Facility code / card number', type: 'select', value: 'generated from the session seed', fixed: true, fixedReason: 'Deliberately not printed here. Drill 1.1\'s flag is to submit what the engine transmitted, and a panel that showed it would make that a lookup.', help: '' },
+        { id: 'format', label: 'Credential format', type: 'select', value: 'h10301', options: FORMAT_CHOICES, help: 'Which bit layout the reader emits and the panel is configured to believe. Nothing on the wire says which one it is.' },
       ],
-      summary: (v) => `${({ em4100: 'EM4100', h10301: 'HID Prox', mifare: 'MIFARE Classic', desfire: 'DESFire EV2' })[v.type]}, FC ${v.facility} / ${v.number}`,
+      summary: (v) => `${({ em4100: 'EM4100', h10301: 'HID Prox', mifare: 'MIFARE Classic', desfire: 'DESFire EV2' })[v.type]} — provisioned from the session seed`,
     },
     reader: {
       id: 'reader', title: 'Reader (PD)', node: 'reader',
       fields: [
-        { id: 'address', label: 'PD address', type: 'number', value: 2, min: 0, max: 126, help: 'Bit 7 of the address byte carries direction, so an address is seven bits.' },
-        { id: 'supportsCrypto', label: 'Supports AES-128', type: 'boolean', value: true, help: 'Reported in the PDCAP reply, function code 0x09. This is the field the downgrade attack deletes.' },
-        { id: 'tamper', label: 'Tamper switch', type: 'boolean', value: true, help: '' },
+        { id: 'address', label: 'PD address', type: 'number', value: 2, min: 0, max: 126, fixed: true, fixedReason: READ_OFF_THE_BENCH, help: 'Bit 7 of the address byte carries direction, so an address is seven bits.' },
+        { id: 'pdClaimsAes', label: 'Reader claims AES-128', type: 'boolean', value: true, help: 'Function code 0x09 in the PDCAP reply. This is the entry the downgrade attack deletes in flight; clearing it here is the same bench without the attacker.' },
+        { id: 'pdInstallMode', label: 'Reader install mode', type: 'boolean', value: false, help: 'An uncommissioned reader takes a key from anything that establishes a channel under the default key.' },
       ],
-      summary: (v) => `PD ${v.address}, AES-128 ${v.supportsCrypto ? 'supported' : 'NOT supported'}`,
+      summary: (v) => `PD ${v.address}, AES-128 ${v.pdClaimsAes ? 'supported' : 'NOT supported'}`,
     },
     link: {
       id: 'link', title: 'Link', node: 'link',
       fields: [
-        { id: 'protocol', label: 'Protocol', type: 'select', value: 'osdp', options: [['wiegand', 'Wiegand D0/D1'], ['clockdata', 'Clock-and-data (ABA)'], ['osdp', 'OSDP over RS-485']], help: '' },
-        { id: 'baud', label: 'Baud', type: 'select', value: '9600', options: [['9600', '9600'], ['19200', '19200'], ['38400', '38400'], ['115200', '115200']], help: '' },
-        { id: 'pollRate', label: 'Poll rate', type: 'select', value: '20', options: [['5', '5 / s'], ['20', '20 / s'], ['50', '50 / s']], help: 'Real installations poll hard. The timeline shows it honestly.' },
+        { id: 'linkType', label: 'Wire protocol', type: 'select', value: 'osdp', options: [['wiegand', 'Wiegand D0/D1'], ['clockdata', 'Clock-and-data (ABA track 2)']], help: 'Two legacy pairs, the same absence of cryptography. Clock-and-data is ABA track 2, which is a magstripe encoding on a door.' },
+        { id: 'baud', label: 'Line rate', type: 'select', value: '9600', options: [['9600', '9600 baud'], ['19200', '19200 baud'], ['38400', '38400 baud'], ['115200', '115200 baud']], help: 'What the bus clocks at. It is what makes an online MAC forgery cost what drill 4.2 says it costs.' },
+        { id: 'pollMs', label: 'Poll interval', type: 'number', value: 50, min: 10, max: 2000, unit: 'ms', help: 'How long the controller waits between polls. Real installations poll hard, and the amount of idle traffic is exactly what makes traffic analysis work.' },
       ],
-      summary: (v) => `${({ wiegand: 'Wiegand', clockdata: 'Clock-and-data', osdp: 'OSDP RS-485' })[v.protocol]}, ${v.baud} baud, ${v.pollRate} polls/s`,
+      summary: (v) => `${({ wiegand: 'Wiegand D0/D1', clockdata: 'Clock-and-data (ABA track 2)', osdp: 'OSDP over RS-485' })[v.linkType]}${v.linkType === 'osdp' ? `, ${v.baud} baud, ${Math.round(1000 / v.pollMs)} polls/s` : ''}`,
     },
     security: {
       id: 'security', title: 'Secure Channel', node: 'controller', critical: true,
       fields: [
-        { id: 'enabled', label: 'Secure Channel', type: 'boolean', value: false, help: 'OSDP ships with this off. Most deployments leave it off.' },
-        { id: 'key', label: 'Base key', type: 'select', value: 'scbk-d', options: [['scbk-d', 'SCBK-D (published default)'], ['weak', 'Site key, sample-code family'], ['strong', 'Site key, properly random']], help: 'SCBK-D is in the specification. Everybody has it.' },
-        { id: 'mode', label: 'Cipher mode', type: 'select', value: 'scs17', options: [['scs15', 'SCS_15/16 — MAC only, no encryption'], ['scs17', 'SCS_17/18 — MAC and AES-128-CBC']], help: 'SCS_15/16 are null ciphers. They authenticate and do not conceal.' },
-        { id: 'macBits', label: 'MAC length', type: 'select', value: '32', options: [['32', '32 bits (the specification)'], ['128', '128 bits (not legal OSDP)']], help: 'The specification truncates to four bytes.' },
+        { id: 'secureChannel', label: 'Secure Channel', type: 'select', value: 'off', options: [['off', 'Off — everything in the clear'], ['if-available', 'If available — the reader decides'], ['required', 'Required']], help: 'Off is how OSDP ships and how most of it is deployed. "If available" lets the reader\'s own capability reply decide, which is what the downgrade attack rewrites. "Required" still means "required of readers that say they can".' },
+        { id: 'key', label: 'Base key', type: 'select', value: 'scbk-d', options: [['scbk-d', 'SCBK-D — the published default'], ['weak', 'Weak — from the sample-code family'], ['site', 'Site key — not in any published list']], help: 'SCBK-D is printed in the specification, so everybody has it. A weak key is from the published sample-code family and can be swept for. A site key is neither, so it has to be asked for or captured.' },
+        { id: 'nullCipher', label: 'Null cipher (SCS_15/16)', type: 'boolean', value: false, help: 'Authenticate without encrypting. A real, specified mode, and some deployments run it believing "secure channel is on" hides the card number.' },
+        { id: 'macBytes', label: 'MAC bytes', type: 'number', value: 4, min: 1, max: 4, unit: 'bytes', help: 'OSDP truncates to four and offers no way to change it, so four is the only honest value. Shorter is a rig, and drill 4.2 says so out loud.' },
       ],
-      summary: (v) => v.enabled
-        ? `on, ${({ 'scbk-d': 'SCBK-D', weak: 'weak site key', strong: 'site key' })[v.key]}, ${v.mode === 'scs15' ? 'SCS_15/16 (no encryption)' : 'SCS_17/18'}, ${v.macBits}-bit MAC`
+      summary: (v) => v.secureChannel !== 'off'
+        ? `on, ${({ 'scbk-d': 'SCBK-D (the published default)', weak: 'a key from the published sample family', site: 'site key' })[v.key]}, ${v.nullCipher ? 'SCS_15/16 (null cipher — MAC only)' : 'SCS_17/18'}, ${v.macBytes * 8}-bit MAC`
         : 'OFF — everything on this bus is in the clear',
     },
     controller: {
       id: 'controller', title: 'Controller (ACU)', node: 'controller',
       fields: [
-        { id: 'requireSecure', label: 'Require Secure Channel', type: 'boolean', value: false, help: 'If set, the controller refuses to run a PD that reports no crypto support — unless something rewrites that report.' },
-        { id: 'installMode', label: 'Install mode', type: 'boolean', value: false, critical: true, help: 'A controller in install mode hands out the SCBK on request. Installers leave it on.' },
-        { id: 'strikeMs', label: 'Strike time', type: 'number', value: 5000, min: 500, max: 30000, help: 'How long the door stays unlocked after a grant.' },
+        { id: 'trustPdcap', label: 'Trust the capability reply', type: 'boolean', value: true, help: 'Nothing authenticates a capability report. With this on the controller decides from it whether to run a handshake at all — which is the whole of the downgrade attack. Turning it off is the defence.' },
+        { id: 'acuInstallMode', label: 'Controller install mode', type: 'boolean', value: false, help: 'A controller in install mode hands the site key to anything that turns up claiming the default. Installers leave it on.' },
+        { id: 'strikeMs', label: 'Strike time', type: 'number', value: 3000, min: 200, max: 30000, unit: 'ms', help: 'How long the door stays unlocked after a grant.' },
       ],
-      summary: (v) => `${v.requireSecure ? 'requires Secure Channel' : 'accepts cleartext'}${v.installMode ? ' · INSTALL MODE ON' : ''} · strike ${(v.strikeMs / 1000).toFixed(1)} s`,
+      summary: (v) => `${v.secureChannel === 'required' ? 'requires Secure Channel' : (v.secureChannel === 'if-available' ? 'Secure Channel if available' : 'accepts cleartext')}${v.acuInstallMode ? ' · INSTALL MODE ON' : ''} · strike ${(v.strikeMs / 1000).toFixed(1)} s`,
     },
     attacker: {
       id: 'attacker', title: 'Attacker position', node: 'tap',
       fields: [
-        { id: 'capture', label: 'Capture to buffer', type: 'boolean', value: true, help: '' },
-        { id: 'rewriteCard', label: 'Rewrite card number', type: 'boolean', value: false, help: 'Inline taps only. Substitutes the credential in flight.' },
-        { id: 'rewriteTo', label: 'Substitute number', type: 'number', value: 1, min: 0, max: 65535, help: '' },
+        { id: 'runner', label: 'What the bench ran', type: 'select', value: 'baseline', fixed: true, fixedReason: READ_OFF_THE_BENCH, help: 'The taps decide this.' },
+        { id: 'captured', label: 'Frames held', type: 'number', value: 0, fixed: true, fixedReason: READ_OFF_THE_BENCH, help: 'Frames the attacker kept, payloads and all — readable or not.' },
       ],
-      summary: (v) => `${v.capture ? 'capturing' : 'not capturing'}${v.rewriteCard ? ` · rewriting card number to ${v.rewriteTo}` : ''}`,
+      summary: (v) => (v.captured ? `capturing · ${v.captured} frame(s) held` : 'nothing clipped on — the bench runs untouched'),
     },
   };
+}
+
+/*
+ * Which options a bench accepts, and what to say about the ones it cannot.
+ *
+ * The real engine keeps this in odr-scenario, per scenario. The mock keys it on
+ * the one thing its canned scenarios differ by: whether the wire is a bus.
+ */
+function unsupportedHere(onABus, fieldId) {
+  const osdpOnly = ['secureChannel', 'key', 'nullCipher', 'macBytes', 'trustPdcap', 'acuInstallMode', 'pdInstallMode', 'pdClaimsAes'];
+  if (!onABus && osdpOnly.includes(fieldId)) return NO_CRYPTO_HERE;
+  if (!onABus && ['baud', 'pollMs'].includes(fieldId)) return NO_BUS_HERE;
+  if (onABus && fieldId === 'linkType') return NOT_A_PAIR;
+  return null;
+}
+
+/*
+ * What a setting costs the drill that is loaded.
+ *
+ * A sentence, not a refusal: docs/UI.md records the owner's feedback as prefer
+ * warning over blocking, so the bench still builds and the interface says what
+ * stopped working.
+ */
+function drillWarning(drillId, fieldId, values) {
+  if (!drillId) return null;
+  const m = String(drillId);
+  if (m.startsWith('2.') && fieldId === 'secureChannel' && values.secureChannel !== 'off') {
+    return 'Module 2 is about a bus with nothing configured on it. With Secure Channel on, the card read is sealed and this drill\'s flag cannot be earned.';
+  }
+  if ((m.startsWith('3.') || m.startsWith('4.')) && fieldId === 'secureChannel' && values.secureChannel === 'off') {
+    return 'This drill is about attacking a secure channel. With Secure Channel off there is no handshake to capture, and the flag cannot be earned.';
+  }
+  if (m === '3.2' && fieldId === 'key' && values.key !== 'scbk-d') {
+    return 'Drill 3.2 is about recognising SCBK-D — the key printed in the manual. On any other key there is nothing published to recognise, and the flag cannot be earned.';
+  }
+  if (m === '3.3' && fieldId === 'key' && values.key !== 'weak') {
+    return 'Drill 3.3 sweeps the published sample-key family. On a key that is not from that family there is nothing for the sweep to find, and the flag cannot be earned.';
+  }
+  if (m === '3.4' && fieldId === 'acuInstallMode' && !values.acuInstallMode) {
+    return 'Drill 3.4 asks a controller in install mode for the key. With install mode off it will not answer, and the flag cannot be earned — which is the fix, and worth seeing.';
+  }
+  if (m === '3.6' && fieldId === 'trustPdcap' && !values.trustPdcap) {
+    return 'This is the defence. With the capability reply distrusted the controller runs the handshake anyway, the downgrade is refused, and drill 3.6\'s flag cannot be earned — which is exactly what drill 5.2 asks you to detect.';
+  }
+  if (m === '4.2' && fieldId === 'macBytes' && values.macBytes >= 4) {
+    return 'Four bytes is the honest width, and at four the forgery does not finish — that is drill 4.2\'s other half and the crawling bar says so. The flag needs the rigged bench.';
+  }
+  if (m === '4.4' && fieldId === 'nullCipher' && !values.nullCipher) {
+    return 'Drill 4.4 reads a payload off a MACed-but-unencrypted link. With encryption on there is nothing in the clear to read.';
+  }
+  return null;
 }
 
 const TOPOLOGY_NODES = [
@@ -1081,6 +1164,8 @@ class MockEngine {
   constructor() {
     this.version = 0;
     this.config = defaultConfig();
+    this.changed = new Set();
+    this._drill = null;
     this.taps = [];
     this.observed = new Set();     // learner actions the engine has been told about
     this.tasks = [];
@@ -1196,14 +1281,16 @@ class MockEngine {
   }
 
   _applyScenarioDefaults(dr) {
+    this._drill = dr;
     const c = this._scenario.cfg;
     const set = (g, f, v) => { const fld = this.config[g].fields.find((x) => x.id === f); if (fld) fld.value = v; };
-    set('link', 'protocol', c.wire === 'osdp' ? 'osdp' : 'wiegand');
-    set('security', 'enabled', !!c.secureChannel);
-    set('security', 'mode', c.nullCipher ? 'scs15' : 'scs17');
-    set('security', 'key', c.keyType === 'scbk-d' ? 'scbk-d' : (c.keyType === 'scbk' ? 'weak' : 'scbk-d'));
-    set('controller', 'requireSecure', !!c.secureChannel);
+    set('link', 'linkType', c.wire === 'osdp' ? 'osdp' : 'wiegand');
+    set('security', 'secureChannel', c.secureChannel ? 'required' : 'off');
+    set('security', 'nullCipher', !!c.nullCipher);
+    set('security', 'key', c.keyType === 'scbk' ? 'weak' : 'scbk-d');
     set('card', 'type', c.wire === 'osdp' ? 'h10301' : 'em4100');
+    // A bench the learner has not touched, which is what loading one means.
+    this.changed.clear();
 
     // docs/UI.md: "Bronze pre-places the taps and says which control to touch."
     // Only Bronze. At Silver and Gold, placing the tap is the learner's job,
@@ -1239,25 +1326,81 @@ class MockEngine {
   }
 
   /* ---- configuration ---- */
+  _values() {
+    const v = {};
+    for (const g of Object.values(this.config)) for (const f of g.fields) v[f.id] = f.value;
+    return v;
+  }
+
+  _cfg(groupId, fieldId) {
+    const f = this.config[groupId].fields.find((x) => x.id === fieldId);
+    return f ? f.value : undefined;
+  }
+
+  _onABus() {
+    return this._scenario ? this._scenario.cfg.wire === 'osdp' : true;
+  }
+
   configGroups() {
-    return Object.values(this.config).map((g) => {
-      const values = {};
-      for (const f of g.fields) values[f.id] = f.value;
-      return {
-        id: g.id, title: g.title, node: g.node, critical: !!g.critical,
-        summary: g.summary(values),
-        alert: g.id === 'security' ? !values.enabled : (g.id === 'controller' ? !!values.installMode : false),
-        fields: g.fields.map((f) => ({ ...f })),
-      };
-    });
+    const all = this._values();
+    const onABus = this._onABus();
+    const drillId = this.session ? this.session.drillId : null;
+    return Object.values(this.config).map((g) => ({
+      id: g.id,
+      title: g.title,
+      node: g.node,
+      critical: !!g.critical,
+      summary: g.summary(all),
+      alert: g.id === 'security'
+        ? (onABus && all.secureChannel === 'off')
+        : (g.id === 'controller' ? !!all.acuInstallMode : false),
+      fields: g.fields.map((f) => {
+        const cannot = f.fixed ? f.fixedReason : unsupportedHere(onABus, f.id);
+        return {
+          ...f,
+          fixed: !!cannot,
+          fixedReason: cannot || undefined,
+          changed: this.changed.has(f.id),
+          warning: cannot ? undefined : (drillWarning(drillId, f.id, all) || undefined),
+        };
+      }),
+    }));
   }
 
   setConfig(groupId, fieldId, value) {
     const g = this.config[groupId];
-    if (!g) return { ok: false, error: 'no such group' };
+    if (!g) return { ok: false, error: `there is no ${groupId} group` };
     const f = g.fields.find((x) => x.id === fieldId);
-    if (!f) return { ok: false, error: 'no such field' };
-    f.value = f.type === 'number' ? Number(value) : value;
+    if (!f) return { ok: false, error: `there is no bench option called ${fieldId}` };
+    // Refusal is for the impossible only. A setting that would break the loaded
+    // drill is applied, and comes back carrying a warning.
+    const cannot = f.fixed ? f.fixedReason : unsupportedHere(this._onABus(), fieldId);
+    if (cannot) return { ok: false, error: cannot, groups: this.configGroups() };
+    if (f.type === 'number') {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return { ok: false, error: `${value} is not a whole number`, groups: this.configGroups() };
+      if (n < f.min || n > f.max) {
+        return { ok: false, error: `${n} ${f.unit || ''} is outside this option's range of ${f.min} to ${f.max}`.replace('  ', ' '), groups: this.configGroups() };
+      }
+      f.value = n;
+    } else if (f.type === 'boolean') {
+      f.value = value === true || value === 'true' || value === 'yes' || value === 'on' || value === '1';
+    } else {
+      if (f.options && !f.options.some(([v]) => v === value)) {
+        return { ok: false, error: `"${value}" is not one of this option's values: ${f.options.map(([v]) => v).join(', ')}`, groups: this.configGroups() };
+      }
+      f.value = value;
+    }
+    this.changed.add(fieldId);
+    this._bump();
+    return { ok: true, groups: this.configGroups() };
+  }
+
+  /** Put every option back to the bench's own setting. */
+  resetConfig() {
+    this.changed.clear();
+    this.config = defaultConfig();
+    if (this._drill) this._applyScenarioDefaults(this._drill);
     this._bump();
     return { ok: true, groups: this.configGroups() };
   }
@@ -1269,7 +1412,7 @@ class MockEngine {
       nodes: TOPOLOGY_NODES.map((n) => ({ ...n, state: n.id === 'door' ? st.door : 'idle' })),
       links: TOPOLOGY_LINKS.map((l) => ({
         ...l,
-        protocol: l.id === 'reader-controller' ? this.config.link.fields[0].value : (l.id === 'card-reader' ? 'rf' : 'relay'),
+        protocol: l.id === 'reader-controller' ? this._cfg('link', 'linkType') : (l.id === 'card-reader' ? 'rf' : 'relay'),
         cut: this.taps.some((t) => t.linkId === l.id && t.mode === 'inline'),
       })),
       taps: this.taps.map((t) => ({ ...t })),
@@ -1317,7 +1460,7 @@ class MockEngine {
     this._lastQueryT = tUs;
     const st = {
       tUs, door: 'closed', strike: 'idle', decision: 'none', lastCredential: null,
-      secureChannel: this.config.security.fields[0].value ? 'configured' : 'off',
+      secureChannel: this._cfg('security', 'secureChannel') !== 'off' ? 'configured' : 'off',
       scs: null, key: null,
     };
     for (const e of this._activeEvents()) {
@@ -1327,7 +1470,7 @@ class MockEngine {
     st.attacker = {
       taps: this.taps.length,
       inline: this.taps.some((t) => t.mode === 'inline'),
-      holdsKeys: this.config.security.fields[1].value === 'scbk-d' && this.taps.length > 0,
+      holdsKeys: this._keyHeld() && this.taps.length > 0,
       captured: this.taps.length > 0 ? this._activeFrames().filter((f) => f.tUs <= tUs).length : 0,
     };
     return st;
@@ -1398,7 +1541,7 @@ class MockEngine {
   }
 
   _keyHeld() {
-    const key = this.config.security.fields[1].value;
+    const key = this._cfg('security', 'key');
     return key === 'scbk-d' || key === 'weak';
   }
 

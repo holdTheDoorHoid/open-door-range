@@ -29,18 +29,19 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use odr_bus::{
-    clock_data_bench, osdp_bench, wiegand_bench, AccessList, AcuConfig, ClockDataConfig,
-    ControllerId, DoorId, LinkId, Micros, OsdpBenchSpec, PdConfig, Presentation, ReaderId,
-    Rs485Timing, ScRequirement, SourceId, World,
+    clock_data_bench, default_capabilities, osdp_bench, wiegand_bench, AccessList, AcuConfig,
+    ClockDataConfig, ControllerId, DoorId, LinkId, Micros, OsdpBenchSpec, PdConfig, Presentation,
+    ReaderId, Rs485Timing, ScRequirement, SourceId, World,
 };
 use odr_credential::hid_prox::H10301;
 use odr_credential::mifare::{AccessBits, MifareClassic1k, DEFAULT_KEY};
 use odr_credential::Rng;
-use odr_osdp::SCBK_D;
+use odr_osdp::{KeyType, SCBK_D};
 use odr_wiegand::{AbaEncoding, BitVec, CardFormat, Credential};
 
 use crate::error::{Result, ScenarioError};
 use crate::ids::LinkRole;
+use crate::options::{BenchOptions, KeyChoice, LinkChoice, Resolved};
 
 /// The address every single-peripheral OSDP bench polls.
 pub const PD_ADDRESS: u8 = 0x01;
@@ -431,45 +432,161 @@ impl Bench {
 /// H10301 is 26 bits: eight of facility code and sixteen of card number, which
 /// is the whole of the format's "security". The values come from the seed so a
 /// learner cannot read drill 1.1's answer out of this file.
-fn seeded_credential(rng: &mut Rng) -> Credential {
+///
+/// The two draws are the same whatever the format is, and are then masked to
+/// what the format can express — so changing the format changes the layout on
+/// the wire without changing the sequence this bench pulls from the RNG.
+fn seeded_credential(rng: &mut Rng, format: CardFormat) -> Credential {
     let fc = u64::from(rng.next_u32() & 0xFF);
     let cn = u64::from(rng.next_u32() & 0xFFFF);
-    Credential::new(CardFormat::H10301, fc, cn)
+    in_format(format, fc, cn)
 }
 
-/// Build a bench.
+/// Fit a facility code and card number into a format, however narrow it is.
+fn in_format(format: CardFormat, fc: u64, cn: u64) -> Credential {
+    let cn = cn & format.max_card_number();
+    match format.max_facility_code() {
+        Some(max) => Credential::new(format, fc & max, cn),
+        None => Credential::without_facility(format, cn),
+    }
+}
+
+/// Build a bench, exactly as the scenario's own definition has it.
 ///
 /// The seed is the session seed; the scenario salts it, so the same session
 /// gives every drill different nonces and the same drill the same ones.
 pub fn build(scenario: ScenarioId, seed: u64) -> Result<Bench> {
+    build_with(scenario, seed, &BenchOptions::default())
+}
+
+/// **Build a bench with the learner's options applied.**
+///
+/// [`BenchOptions::default()`] reproduces [`build`] byte for byte — it
+/// overrides nothing, and every scenario's own settings live in
+/// [`options::defaults`](crate::options::defaults). Anything the options *do*
+/// change is applied before the world is assembled, so the same options plus
+/// the same seed always give the same bytes.
+pub fn build_with(scenario: ScenarioId, seed: u64, opts: &BenchOptions) -> Result<Bench> {
     let salted = seed ^ scenario.salt();
-    match scenario {
+    let r = opts.resolve(scenario);
+    let mut bench = match scenario {
         ScenarioId::NoBench => Err(ScenarioError::UnknownScenario {
             id: String::from(scenario.name()),
         }),
         ScenarioId::MonitoredDay => Err(ScenarioError::UnknownScenario {
             id: String::from(scenario.name()),
         }),
-        ScenarioId::CardEm4100 => build_em4100(salted),
-        ScenarioId::CardClone => build_clone(salted),
-        ScenarioId::CardHidProx => build_hid_prox(salted),
-        ScenarioId::CardMifare => build_mifare(salted),
-        ScenarioId::CardDesfire => build_desfire(salted),
-        ScenarioId::WiegandDoor => build_wiegand_door(salted),
-        ScenarioId::WiegandParityFlip => build_wiegand_parity_flip(salted),
-        ScenarioId::WiegandImplant => build_wiegand_implant(salted),
-        ScenarioId::WiegandSweep => build_wiegand_sweep(salted),
-        ScenarioId::ClockDataDoor => build_clock_data(salted),
-        ScenarioId::OsdpClear => build_osdp_clear(salted),
-        ScenarioId::OsdpDefaultKey => build_osdp_default_key(salted),
-        ScenarioId::OsdpWeakKey => build_osdp_weak_key(salted),
-        ScenarioId::OsdpInstallMode => build_osdp_install_mode(salted),
-        ScenarioId::OsdpCommissioning => build_osdp_commissioning(salted),
-        ScenarioId::OsdpRequiredSc => build_osdp_required_sc(salted),
-        ScenarioId::OsdpEncryptedDay => build_osdp_encrypted_day(salted),
-        ScenarioId::OsdpShortMac => build_osdp_short_mac(salted),
-        ScenarioId::OsdpNullCipher => build_osdp_null_cipher(salted),
+        ScenarioId::CardEm4100 => build_em4100(salted, &r),
+        ScenarioId::CardClone => build_clone(salted, &r),
+        ScenarioId::CardHidProx => build_hid_prox(salted, &r),
+        ScenarioId::CardMifare => build_mifare(salted, &r),
+        ScenarioId::CardDesfire => build_desfire(salted, &r),
+        ScenarioId::WiegandDoor => build_wiegand_door(salted, &r),
+        ScenarioId::WiegandParityFlip => build_wiegand_parity_flip(salted, &r),
+        ScenarioId::WiegandImplant => build_wiegand_implant(salted, &r),
+        ScenarioId::WiegandSweep => build_wiegand_sweep(salted, &r),
+        ScenarioId::ClockDataDoor => build_clock_data(salted, &r),
+        ScenarioId::OsdpClear => build_osdp_clear(salted, &r),
+        ScenarioId::OsdpDefaultKey => build_osdp_default_key(salted, &r),
+        ScenarioId::OsdpWeakKey => build_osdp_weak_key(salted, &r),
+        ScenarioId::OsdpInstallMode => build_osdp_install_mode(salted, &r),
+        ScenarioId::OsdpCommissioning => build_osdp_commissioning(salted, &r),
+        ScenarioId::OsdpRequiredSc => build_osdp_required_sc(salted, &r),
+        ScenarioId::OsdpEncryptedDay => build_osdp_encrypted_day(salted, &r),
+        ScenarioId::OsdpShortMac => build_osdp_short_mac(salted, &r),
+        ScenarioId::OsdpNullCipher => build_osdp_null_cipher(salted, &r),
+    }?;
+    let door = bench.door;
+    bench.world.door_mut(door)?.strike_time_us = Micros::from(r.strike_ms) * 1000;
+    Ok(bench)
+}
+
+/// **The legacy half of a bench**, whichever of the two pairs it runs on.
+///
+/// `WiegandDoor` and `ClockDataDoor` are structurally the same door — reader,
+/// two wires, panel, strike — differing only in how the reader clocks the bits
+/// out, which is why the wire protocol is an option here and not on the OSDP
+/// benches. A legacy panel matches on the bits it receives rather than on a
+/// decoded card number (`odr-bus` README), so the clock-and-data access list is
+/// built by running the reader's own encoder through a throwaway world first.
+struct Legacy {
+    world: World,
+    reader: ReaderId,
+    controller: ControllerId,
+    door: DoorId,
+    link: LinkId,
+}
+
+fn legacy_bench(seed: u64, enrol: &[Credential], r: &Resolved) -> Result<Legacy> {
+    match r.link {
+        LinkChoice::Wiegand => {
+            let access = if enrol.is_empty() {
+                AccessList::allow_all()
+            } else {
+                let mut a = AccessList::new();
+                for c in enrol {
+                    a = a.with_credential(c)?;
+                }
+                a.assuming(r.format)
+            };
+            let b = wiegand_bench(seed, access)?;
+            Ok(Legacy {
+                world: b.world,
+                reader: b.reader,
+                controller: b.controller,
+                door: b.door,
+                link: b.link,
+            })
+        }
+        LinkChoice::ClockData => {
+            let cfg = ClockDataConfig {
+                encoding: AbaEncoding::bare(),
+                assumed_format: Some(r.format),
+            };
+            let access = if enrol.is_empty() {
+                AccessList::allow_all()
+            } else {
+                let mut a = AccessList::new();
+                for c in enrol {
+                    a = a.with_bits(clock_data_bits(seed, &cfg, c)?);
+                }
+                a.checking_parity(false)
+            };
+            let b = clock_data_bench(seed, access, cfg)?;
+            Ok(Legacy {
+                world: b.world,
+                reader: b.reader,
+                controller: b.controller,
+                door: b.door,
+                link: b.link,
+            })
+        }
     }
+}
+
+/// What this reader would put on a clock-and-data pair for this credential.
+fn clock_data_bits(seed: u64, cfg: &ClockDataConfig, cred: &Credential) -> Result<BitVec> {
+    let mut probe = clock_data_bench(seed, AccessList::allow_all(), cfg.clone())?;
+    let p = Presentation::new(
+        SourceId(0),
+        odr_bus::FormatId::for_card_format(cred.format),
+        cred.encode()?,
+    );
+    probe.world.present(probe.reader, 0, p)?;
+    probe.world.run_until(2_000_000)?;
+    let bits = probe
+        .world
+        .log()
+        .find(|rec| matches!(rec.kind, odr_bus::RecordKind::WireTx { .. }))
+        .next()
+        .and_then(|rec| match &rec.kind {
+            odr_bus::RecordKind::WireTx { bits, .. } => Some(bits.clone()),
+            _ => None,
+        });
+    bits.ok_or(ScenarioError::DidNotRun {
+        drill: crate::ids::DrillId::new(1, 6),
+        detail: String::from("the probe reader emitted nothing to enrol"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -478,10 +595,10 @@ pub fn build(scenario: ScenarioId, seed: u64) -> Result<Bench> {
 
 /// Drill 0.1. The tag's id comes from the seed, so the flag is a comparison
 /// against something the engine generated rather than against a constant.
-fn build_em4100(seed: u64) -> Result<Bench> {
+fn build_em4100(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
     let id40 = rng.next_u64() & 0xFF_FFFF_FFFF;
-    let bench = wiegand_bench(seed, AccessList::allow_all())?;
+    let bench = legacy_bench(seed, &[], r)?;
     Ok(Bench {
         scenario: ScenarioId::CardEm4100,
         seed,
@@ -505,7 +622,7 @@ fn build_em4100(seed: u64) -> Result<Bench> {
 
 /// Drill 0.2. The panel is configured for whatever the victim's badge emits,
 /// which is exactly the configuration every real panel has.
-fn build_clone(seed: u64) -> Result<Bench> {
+fn build_clone(seed: u64, _r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
     let facility_code = (rng.next_u32() & 0xFF) as u8;
     let card_number = (rng.next_u32() & 0xFFFF) as u16;
@@ -539,7 +656,7 @@ fn build_clone(seed: u64) -> Result<Bench> {
 
 /// Drill 0.3. The same card, presented honestly, so the learner can compare
 /// what they predicted with what crossed the wire.
-fn build_hid_prox(seed: u64) -> Result<Bench> {
+fn build_hid_prox(seed: u64, _r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
     let facility_code = (rng.next_u32() & 0xFF) as u8;
     let card_number = (rng.next_u32() & 0xFFFF) as u16;
@@ -581,7 +698,7 @@ fn build_hid_prox(seed: u64) -> Result<Bench> {
 /// Drill 0.4. Sector 0 is on the published transport key; everything else is
 /// seeded. One sector on a factory default is the whole of the attacker's
 /// starting position, and it is what a nested attack needs.
-fn build_mifare(seed: u64) -> Result<Bench> {
+fn build_mifare(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
     let uid = rng.next_u32();
     let card_seed = rng.next_u64();
@@ -593,7 +710,7 @@ fn build_mifare(seed: u64) -> Result<Bench> {
     for (i, b) in credential.iter_mut().enumerate().take(5) {
         *b = (rng.next_u32() >> (i as u32 & 7)) as u8;
     }
-    let bench = wiegand_bench(seed, AccessList::allow_all())?;
+    let bench = legacy_bench(seed, &[], r)?;
     Ok(Bench {
         scenario: ScenarioId::CardMifare,
         seed,
@@ -621,7 +738,7 @@ fn build_mifare(seed: u64) -> Result<Bench> {
 
 /// Drill 0.5. The contrast card. Its key is seeded and never leaves it — which
 /// is the entire lesson.
-fn build_desfire(seed: u64) -> Result<Bench> {
+fn build_desfire(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
     let uid = rng.next_u32();
     let mut key = [0u8; 16];
@@ -632,7 +749,7 @@ fn build_desfire(seed: u64) -> Result<Bench> {
     for b in contents.iter_mut() {
         *b = (rng.next_u32() & 0xFF) as u8;
     }
-    let bench = wiegand_bench(seed, AccessList::allow_all())?;
+    let bench = legacy_bench(seed, &[], r)?;
     Ok(Bench {
         scenario: ScenarioId::CardDesfire,
         seed,
@@ -662,13 +779,10 @@ fn build_desfire(seed: u64) -> Result<Bench> {
 // ---------------------------------------------------------------------------
 
 /// Drills 1.1, 1.2, 1.3 and 1.5. One enrolled card, one badge-in.
-fn build_wiegand_door(seed: u64) -> Result<Bench> {
+fn build_wiegand_door(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let cred = seeded_credential(&mut rng);
-    let access = AccessList::new()
-        .with_credential(&cred)?
-        .assuming(CardFormat::H10301);
-    let bench = wiegand_bench(seed, access)?;
+    let cred = seeded_credential(&mut rng, r.format);
+    let bench = legacy_bench(seed, &[cred], r)?;
     Ok(Bench {
         scenario: ScenarioId::WiegandDoor,
         seed,
@@ -699,18 +813,15 @@ fn build_wiegand_door(seed: u64) -> Result<Bench> {
 /// The neighbour is derived from the presented credential rather than drawn
 /// again from the seed, because "one bit away" is the whole lesson: parity
 /// covers the bits and says nothing about who they belong to.
-fn build_wiegand_parity_flip(seed: u64) -> Result<Bench> {
+fn build_wiegand_parity_flip(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let visitor = seeded_credential(&mut rng);
-    let neighbour = Credential::new(
-        CardFormat::H10301,
+    let visitor = seeded_credential(&mut rng, r.format);
+    let neighbour = in_format(
+        r.format,
         visitor.facility_code.unwrap_or(0),
         visitor.card_number ^ 1,
     );
-    let access = AccessList::new()
-        .with_credential(&neighbour)?
-        .assuming(CardFormat::H10301);
-    let bench = wiegand_bench(seed, access)?;
+    let bench = legacy_bench(seed, &[neighbour], r)?;
     Ok(Bench {
         scenario: ScenarioId::WiegandParityFlip,
         seed,
@@ -739,21 +850,18 @@ fn build_wiegand_parity_flip(seed: u64) -> Result<Bench> {
 ///
 /// The manager's credential is not in the script: it never goes near the door.
 /// The implant has to produce it.
-fn build_wiegand_implant(seed: u64) -> Result<Bench> {
+fn build_wiegand_implant(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let visitor = seeded_credential(&mut rng);
-    let mut manager = seeded_credential(&mut rng);
+    let visitor = seeded_credential(&mut rng, r.format);
+    let mut manager = seeded_credential(&mut rng, r.format);
     if manager == visitor {
-        manager = Credential::new(
-            CardFormat::H10301,
+        manager = in_format(
+            r.format,
             manager.facility_code.unwrap_or(0),
             manager.card_number ^ 1,
         );
     }
-    let access = AccessList::new()
-        .with_credential(&manager)?
-        .assuming(CardFormat::H10301);
-    let bench = wiegand_bench(seed, access)?;
+    let bench = legacy_bench(seed, &[manager], r)?;
     Ok(Bench {
         scenario: ScenarioId::WiegandImplant,
         seed,
@@ -786,15 +894,12 @@ fn build_wiegand_implant(seed: u64) -> Result<Bench> {
 /// actually swept. Low card numbers are real — sites number from 1 — but the
 /// reason this particular bench has one is so the demonstration fits in a
 /// browser tab.
-fn build_wiegand_sweep(seed: u64) -> Result<Bench> {
+fn build_wiegand_sweep(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
     let facility_code = u64::from(rng.next_u32() & 0xFF);
     let card_number = u64::from(rng.next_u32() & 0x3F);
-    let cred = Credential::new(CardFormat::H10301, facility_code, card_number);
-    let access = AccessList::new()
-        .with_credential(&cred)?
-        .assuming(CardFormat::H10301);
-    let bench = wiegand_bench(seed, access)?;
+    let cred = in_format(r.format, facility_code, card_number);
+    let bench = legacy_bench(seed, &[cred], r)?;
     Ok(Bench {
         scenario: ScenarioId::WiegandSweep,
         seed,
@@ -818,40 +923,10 @@ fn build_wiegand_sweep(seed: u64) -> Result<Bench> {
 /// than on a decoded card number (`odr-bus` README, "things I was not certain
 /// about", point 6), so the access entry is built by running the reader's own
 /// encoder through a throwaway world first.
-fn build_clock_data(seed: u64) -> Result<Bench> {
+fn build_clock_data(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let cred = seeded_credential(&mut rng);
-    let cfg = ClockDataConfig {
-        encoding: AbaEncoding::bare(),
-        assumed_format: Some(CardFormat::H10301),
-    };
-
-    let expected = {
-        let mut probe = clock_data_bench(seed, AccessList::allow_all(), cfg.clone())?;
-        let p = Presentation::new(
-            SourceId(0),
-            odr_bus::FormatId::for_card_format(cred.format),
-            cred.encode()?,
-        );
-        probe.world.present(probe.reader, 0, p)?;
-        probe.world.run_until(2_000_000)?;
-        let bits = probe
-            .world
-            .log()
-            .find(|r| matches!(r.kind, odr_bus::RecordKind::WireTx { .. }))
-            .next()
-            .and_then(|r| match &r.kind {
-                odr_bus::RecordKind::WireTx { bits, .. } => Some(bits.clone()),
-                _ => None,
-            });
-        bits.ok_or(ScenarioError::DidNotRun {
-            drill: crate::ids::DrillId::new(1, 6),
-            detail: String::from("the probe reader emitted nothing to enrol"),
-        })?
-    };
-
-    let access = AccessList::new().with_bits(expected).checking_parity(false);
-    let bench = clock_data_bench(seed, access, cfg)?;
+    let cred = seeded_credential(&mut rng, r.format);
+    let bench = legacy_bench(seed, &[cred], r)?;
     Ok(Bench {
         scenario: ScenarioId::ClockDataDoor,
         seed,
@@ -896,19 +971,20 @@ struct OsdpSetup {
 /// The one place an OSDP bench is assembled, so that every scenario below
 /// differs only in the two endpoint configurations — which is the point being
 /// taught.
-fn osdp(scenario: ScenarioId, seed: u64, setup: OsdpSetup) -> Result<Bench> {
+fn osdp(scenario: ScenarioId, seed: u64, setup: OsdpSetup, r: &Resolved) -> Result<Bench> {
     let OsdpSetup {
-        acu,
-        pd,
+        mut acu,
+        mut pd,
         access,
         script,
         site_key,
         spare_address,
     } = setup;
+    tune(&mut acu, &mut pd, r);
     let spec = OsdpBenchSpec {
         acu,
         pds: alloc::vec![pd],
-        timing: Rs485Timing::at_baud(9600),
+        timing: Rs485Timing::at_baud(r.baud),
         access,
         start_polling_at_us: 0,
     };
@@ -930,8 +1006,79 @@ fn osdp(scenario: ScenarioId, seed: u64, setup: OsdpSetup) -> Result<Bench> {
     })
 }
 
-fn one_badge(rng: &mut Rng, at_us: Micros, duration_us: Micros) -> (Credential, Script) {
-    let cred = seeded_credential(rng);
+/// **Every option that is the same question at both ends of the bus.**
+///
+/// Applied at the one chokepoint, after each scenario has expressed the thing
+/// that makes it itself. Both endpoints must agree about the MAC width and the
+/// cipher mode or nothing on the link verifies, so they are set together here
+/// rather than twice per scenario.
+fn tune(acu: &mut AcuConfig, pd: &mut PdConfig, r: &Resolved) {
+    acu.sc = r.sc;
+    pd.sc = r.sc;
+    acu.trust_pdcap = r.trust_pdcap;
+    acu.install_mode = r.acu_install_mode;
+    pd.install_mode = r.pd_install_mode;
+    acu.encrypt_payloads = !r.null_cipher;
+    pd.encrypt_payloads = !r.null_cipher;
+    acu.mac_len = r.mac_bytes.clamp(1, 4);
+    pd.mac_len = r.mac_bytes.clamp(1, 4);
+    acu.poll_interval_us = Micros::from(r.poll_ms) * 1000;
+    // The capability report is a real, mutable value: the downgrade attack
+    // rewrites it in flight, and this is the same bench with it already false.
+    pd.capabilities = default_capabilities(r.pd_claims_aes, pd.key_type == KeyType::Default);
+}
+
+/// The key the endpoints were commissioned with, drawn from the seed.
+///
+/// Each arm draws exactly what the scenario that defaults to it always drew, so
+/// an unmodified bench pulls the same sequence out of the RNG it always did.
+fn key_material(choice: KeyChoice, rng: &mut Rng) -> ([u8; 16], KeyType) {
+    match choice {
+        KeyChoice::Default => (SCBK_D, KeyType::Default),
+        KeyChoice::Weak => {
+            // A repeated byte, straight out of a vendor's example code. The
+            // byte comes from the seed so a sweep has to find it rather than
+            // recognise it.
+            let byte = (rng.next_u32() & 0xFF) as u8;
+            ([byte; 16], KeyType::SiteKey)
+        }
+        KeyChoice::Site => (strong_key(rng), KeyType::SiteKey),
+    }
+}
+
+/// A controller holding this key material.
+fn acu_keyed(addresses: &[u8], key: [u8; 16], key_type: KeyType, sc: ScRequirement) -> AcuConfig {
+    let base = AcuConfig::polling(addresses.iter().copied());
+    match key_type {
+        KeyType::Default => base.with_default_key(sc),
+        _ => base.with_site_key(key, sc),
+    }
+}
+
+/// A peripheral holding this key material.
+fn pd_keyed(address: u8, key: [u8; 16], key_type: KeyType, sc: ScRequirement) -> PdConfig {
+    let base = PdConfig::at(address);
+    match key_type {
+        KeyType::Default => base.with_default_key(sc),
+        _ => base.with_site_key(key, sc),
+    }
+}
+
+/// The ground-truth key a predicate compares an attacker's recovery against.
+///
+/// `None` when nothing on this bench is keyed, which is what "Secure Channel
+/// off" means.
+fn ground_truth_key(key: [u8; 16], r: &Resolved) -> Option<[u8; 16]> {
+    r.sc.wants_secure_channel().then_some(key)
+}
+
+fn one_badge(
+    rng: &mut Rng,
+    at_us: Micros,
+    duration_us: Micros,
+    format: CardFormat,
+) -> (Credential, Script) {
+    let cred = seeded_credential(rng, format);
     (
         cred,
         Script {
@@ -947,70 +1094,73 @@ fn one_badge(rng: &mut Rng, at_us: Micros, duration_us: Micros) -> (Credential, 
 
 /// Drills 2.1 to 2.4. Nothing is configured, which is how most of these links
 /// are actually deployed.
-fn build_osdp_clear(seed: u64) -> Result<Bench> {
+fn build_osdp_clear(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let (cred, script) = one_badge(&mut rng, 1_500_000, 4_000_000);
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let (cred, script) = one_badge(&mut rng, 1_500_000, 4_000_000, r.format);
     osdp(
         ScenarioId::OsdpClear,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS]),
-            pd: PdConfig::at(PD_ADDRESS),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new().with_credential(&cred)?,
             script,
-            site_key: None,
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
 /// Drills 3.1 and 3.2. SCBK-D: the key in the manual, announced in the clear in
 /// the handshake's key-type byte.
-fn build_osdp_default_key(seed: u64) -> Result<Bench> {
+fn build_osdp_default_key(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let (cred, script) = one_badge(&mut rng, 2_500_000, 6_000_000);
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let (cred, script) = one_badge(&mut rng, 2_500_000, 6_000_000, r.format);
     osdp(
         ScenarioId::OsdpDefaultKey,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS]).with_default_key(ScRequirement::IfAvailable),
-            pd: PdConfig::at(PD_ADDRESS).with_default_key(ScRequirement::IfAvailable),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new().with_credential(&cred)?,
             script,
-            site_key: Some(SCBK_D),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
 /// Drill 3.3. A repeated byte, straight out of a vendor's example code. The
 /// byte comes from the seed so the learner's sweep has to find it rather than
 /// recognise it.
-fn build_osdp_weak_key(seed: u64) -> Result<Bench> {
+fn build_osdp_weak_key(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let byte = (rng.next_u32() & 0xFF) as u8;
-    let site_key = [byte; 16];
-    let (cred, script) = one_badge(&mut rng, 2_500_000, 6_000_000);
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let (cred, script) = one_badge(&mut rng, 2_500_000, 6_000_000, r.format);
     osdp(
         ScenarioId::OsdpWeakKey,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS])
-                .with_site_key(site_key, ScRequirement::IfAvailable),
-            pd: PdConfig::at(PD_ADDRESS).with_site_key(site_key, ScRequirement::IfAvailable),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new().with_credential(&cred)?,
             script,
-            site_key: Some(site_key),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
 /// Drill 3.4. Two addresses polled, one reader fitted, install mode left on
 /// after commissioning — which is the configuration the Mellon paper describes.
-fn build_osdp_install_mode(seed: u64) -> Result<Bench> {
+fn build_osdp_install_mode(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let site_key = strong_key(&mut rng);
+    let (key, key_type) = key_material(r.key, &mut rng);
     let script = Script {
         badges: Vec::new(),
         duration_us: 8_000_000,
@@ -1019,59 +1169,62 @@ fn build_osdp_install_mode(seed: u64) -> Result<Bench> {
         ScenarioId::OsdpInstallMode,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS, SPARE_ADDRESS])
-                .with_site_key(site_key, ScRequirement::IfAvailable)
-                .in_install_mode(true),
-            pd: PdConfig::at(PD_ADDRESS).with_site_key(site_key, ScRequirement::IfAvailable),
+            acu: acu_keyed(&[PD_ADDRESS, SPARE_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new(),
             script,
-            site_key: Some(site_key),
+            site_key: ground_truth_key(key, r),
             spare_address: Some(SPARE_ADDRESS),
         },
+        r,
     )
 }
 
 /// Drills 3.5 and 4.3. A fresh reader on the default key, a controller with the
 /// site key and install mode on, and a badge-in afterwards so there is
 /// something to read once the key is out.
-fn build_osdp_commissioning(seed: u64) -> Result<Bench> {
+fn build_osdp_commissioning(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let site_key = strong_key(&mut rng);
-    let (cred, mut script) = one_badge(&mut rng, 6_000_000, 10_000_000);
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let (cred, mut script) = one_badge(&mut rng, 6_000_000, 10_000_000, r.format);
     script.duration_us = 10_000_000;
     osdp(
         ScenarioId::OsdpCommissioning,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS])
-                .with_site_key(site_key, ScRequirement::IfAvailable)
-                .in_install_mode(true),
-            pd: PdConfig::at(PD_ADDRESS).with_default_key(ScRequirement::IfAvailable),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            // The reader is the fresh one out of the box, so it is on the
+            // published default whatever key the controller is about to push.
+            // That gap is the whole of drills 3.5 and 4.3.
+            pd: pd_keyed(PD_ADDRESS, SCBK_D, KeyType::Default, r.sc),
             access: AccessList::new().with_credential(&cred)?,
             script,
-            site_key: Some(site_key),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
 /// Drill 3.6. Both ends say Secure Channel is required, and the controller
 /// still decides from the unauthenticated capability reply
 /// (`AcuConfig::trust_pdcap`). That sentence is the vulnerability.
-fn build_osdp_required_sc(seed: u64) -> Result<Bench> {
+fn build_osdp_required_sc(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let (cred, script) = one_badge(&mut rng, 2_000_000, 5_000_000);
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let (cred, script) = one_badge(&mut rng, 2_000_000, 5_000_000, r.format);
     osdp(
         ScenarioId::OsdpRequiredSc,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS]).with_default_key(ScRequirement::Required),
-            pd: PdConfig::at(PD_ADDRESS).with_default_key(ScRequirement::Required),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new().with_credential(&cred)?,
             script,
-            site_key: Some(SCBK_D),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
@@ -1083,13 +1236,14 @@ fn build_osdp_required_sc(seed: u64) -> Result<Bench> {
 /// times off the traffic and check them", and a browser rendering a quarter of
 /// a million polls clears no bar at all. The engine is not the limit here; the
 /// screen is.
-fn build_osdp_encrypted_day(seed: u64) -> Result<Bench> {
+fn build_osdp_encrypted_day(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let morning = seeded_credential(&mut rng);
-    let mut afternoon = seeded_credential(&mut rng);
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let morning = seeded_credential(&mut rng, r.format);
+    let mut afternoon = seeded_credential(&mut rng, r.format);
     if afternoon == morning {
-        afternoon = Credential::new(
-            CardFormat::H10301,
+        afternoon = in_format(
+            r.format,
             afternoon.facility_code.unwrap_or(0),
             afternoon.card_number ^ 1,
         );
@@ -1109,16 +1263,17 @@ fn build_osdp_encrypted_day(seed: u64) -> Result<Bench> {
         ScenarioId::OsdpEncryptedDay,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS]).with_default_key(ScRequirement::Required),
-            pd: PdConfig::at(PD_ADDRESS).with_default_key(ScRequirement::Required),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access,
             script: Script {
                 badges,
                 duration_us: 36_000_000,
             },
-            site_key: Some(SCBK_D),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
@@ -1129,7 +1284,9 @@ fn build_osdp_encrypted_day(seed: u64) -> Result<Bench> {
 /// [`odr_attack::MacForger::calibrate`] can *measure* the width it is up
 /// against instead of being told. On a real bus that measurement returns 4 and
 /// the attack does not finish — which is the other half of the drill.
-fn build_osdp_short_mac(seed: u64) -> Result<Bench> {
+fn build_osdp_short_mac(seed: u64, r: &Resolved) -> Result<Bench> {
+    let mut rng = Rng::new(seed);
+    let (key, key_type) = key_material(r.key, &mut rng);
     // No badge-ins: the forger isolates the peripheral from its controller,
     // which is realistic for an inline implant and loud enough that a card read
     // during it would be a distraction rather than a lesson.
@@ -1141,43 +1298,40 @@ fn build_osdp_short_mac(seed: u64) -> Result<Bench> {
         ScenarioId::OsdpShortMac,
         seed,
         OsdpSetup {
-            acu: AcuConfig::polling([PD_ADDRESS])
-                .with_default_key(ScRequirement::IfAvailable)
-                .with_mac_len(1),
-            pd: PdConfig::at(PD_ADDRESS)
-                .with_default_key(ScRequirement::IfAvailable)
-                .with_mac_len(1),
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new(),
             script,
-            site_key: Some(SCBK_D),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 
 /// Drill 4.4. `AcuConfig::encrypt_payloads = false` is SCS_15/SCS_16:
 /// authenticated, and not encrypted.
-fn build_osdp_null_cipher(seed: u64) -> Result<Bench> {
+fn build_osdp_null_cipher(seed: u64, r: &Resolved) -> Result<Bench> {
     let mut rng = Rng::new(seed);
-    let (cred, script) = one_badge(&mut rng, 2_000_000, 6_000_000);
-    let mut acu = AcuConfig::polling([PD_ADDRESS]).with_default_key(ScRequirement::IfAvailable);
-    acu.encrypt_payloads = false;
+    let (key, key_type) = key_material(r.key, &mut rng);
+    let (cred, script) = one_badge(&mut rng, 2_000_000, 6_000_000, r.format);
     osdp(
         ScenarioId::OsdpNullCipher,
         seed,
         OsdpSetup {
-            acu,
-            // Both directions run MAC-only. The reply half is what makes the
+            acu: acu_keyed(&[PD_ADDRESS], key, key_type, r.sc),
+            // Both directions run MAC-only — `tune` sets both ends from the one
+            // option, because a link with a null cipher in one direction only
+            // is a bug rather than a mode. The reply half is what makes the
             // drill's own claim true: the card number crosses an established
             // Secure Channel in plain sight.
-            pd: PdConfig::at(PD_ADDRESS)
-                .with_default_key(ScRequirement::IfAvailable)
-                .with_null_cipher(),
+            pd: pd_keyed(PD_ADDRESS, key, key_type, r.sc),
             access: AccessList::new().with_credential(&cred)?,
             script,
-            site_key: Some(SCBK_D),
+            site_key: ground_truth_key(key, r),
             spare_address: None,
         },
+        r,
     )
 }
 

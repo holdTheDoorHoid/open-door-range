@@ -31,6 +31,29 @@ wasm-pack build crates/odr-wasm --target web --out-dir ../../site/pkg
 
 ---
 
+## What changed in version 3
+
+**Configuration sets as well as reports** (§3). Version 2 said the wasm engine refused
+every `setConfig`, and gave an honest reason: a bench came from a `ScenarioId` and a seed,
+and there was no seam for "the same bench with Secure Channel on". The seam now exists in
+the right place — `odr_scenario::options::BenchOptions`, threaded into
+`scenario::build_with` and the three runners — so the controls are live again without the
+bridge inventing a second definition of any bench. Four consequences for this document:
+
+1. **`setConfig` applies, rebuilds and bumps the version.** It refuses only when the
+   bench cannot be built that way, and says which of the three reasons it is.
+2. **Fields carry `warning` and `changed`.** A setting that would make the loaded drill
+   unwinnable is applied and warned about rather than blocked — docs/UI.md's recorded
+   feedback is prefer warning over blocking, and a drill that refused its own defence
+   setting would forbid the "run the attack, then run the fix" exercise the engine was
+   built for. `fixed` survives for the genuinely impossible and for values read off the
+   run.
+3. **`engine.resetConfig()` is new.** One move back to the bench the scenario defines.
+4. **The option ids and their legal values come from the engine.** The table in §3 is
+   documentation, not a contract the site may hardcode.
+
+`engine-mock.js` implements v3 and is still the readable statement of what this means.
+
 ## What changed in version 2
 
 Version 1 was written against the mock. The real engine needed five changes, each of
@@ -43,11 +66,10 @@ section below.
    passive analyser on the same pair — what a real operator carries, and what `odr-bus`
    allows. `addTap` now adds; a second tap in the *same* mode on the same link is
    refused, because two identical probes are not a second capability.
-2. **Configuration reports; it does not set** (§3). Every field now carries `fixed` and
-   `fixedReason`, and the wasm engine refuses every `setConfig`. A bench is assembled by
-   `odr-scenario` from a scenario id and a seed, and there is no seam for altering one
-   afterwards. The controls are still *visible*, which is what "collapse, never remove"
-   asks for; they are no longer pretended to be live.
+2. **Configuration reports; it does not set** (§3). Every field grew `fixed` and
+   `fixedReason`, and the wasm engine refused every `setConfig`. **Superseded by v3**,
+   which put the seam into `odr-scenario` where it belonged; `fixed` and `fixedReason`
+   survive for the fields that genuinely are not controls.
 3. **Drills that take a typed claim now have somewhere to type it** (§9). Seven drills
    plus the reference section submit a claim that `odr-scenario` checks against a value
    the engine generated from its seed. The mock approximated those predicates by watching
@@ -73,7 +95,7 @@ static asset from the same origin and that is the only request the page ever mak
 
 ```js
 export const ENGINE_KIND;          // 'mock' | 'wasm'
-export const ENGINE_API_VERSION;   // integer; bump on a breaking change. Currently 2.
+export const ENGINE_API_VERSION;   // integer; bump on a breaking change. Currently 3.
 export async function createEngine(options?): Promise<Engine>;
 ```
 
@@ -222,6 +244,14 @@ The rule from docs/UI.md is **collapse, never remove**. Every group must produce
 summary line that states the thing that matters even when the group is folded, because
 that line is also rendered in the always-visible bench strip at the top of the page.
 
+**The engine owns the option list.** Which options a bench accepts, what their legal
+values are, what each one does and what a value costs the drill that is loaded all come
+from `odr_scenario::options`. The site renders that list and carries none of its own — a
+control the site invented would be a second, divergent statement of what a bench is,
+which is the thing §3 has always existed to prevent. The lists genuinely differ per
+bench: Secure Channel is meaningless on a Wiegand pair, and a card-layer bench has no
+bus.
+
 ### `engine.configGroups() → ConfigGroup[]`
 
 ```ts
@@ -235,48 +265,97 @@ type ConfigGroup = {
                            // (Secure Channel off, install mode on). Drawn with ▲ and a
                            // border — never colour alone.
   fields: Array<{
-    id: string;
+    id: string;            // the option id: 'secureChannel', 'macBytes', 'trustPdcap'
     label: string;
     type: 'boolean' | 'number' | 'select';
     value: boolean | number | string;
     options?: Array<[value: string, label: string]>;  // select only
-    min?: number; max?: number;                       // number only
+    min?: number; max?: number; unit?: string;        // number only; unit is 'ms', 'bytes'
     help: string;          // one sentence, shown under the control
-    critical?: boolean;
-    fixed?: boolean;       // v2 — the engine reports this and will not set it
-    fixedReason?: string;  // v2 — why, in the engine's own words
+    critical?: boolean;    // this value is worth drawing attention to
+    changed?: boolean;     // v3 — the learner moved it off the bench's own setting
+    fixed?: boolean;       // the engine reports this and will not set it
+    fixedReason?: string;  // why, in the engine's own words
+    warning?: string;      // v3 — what this value costs the drill that is loaded.
+                           // THE CONTROL STAYS LIVE. See below.
   }>;
 };
 ```
 
-**`fixed` fields are rendered as text, not as a dead control.** The site draws the value
-and prints `fixedReason` once at the top of the panel. A disabled input that looked
-settable would be the interface telling a small lie about what it can do, which is the
-thing "collapse, never remove" exists to prevent.
+**Two kinds of "no", and they must look different.**
+
+**`fixed` fields are rendered as text, not as a dead control**, with `fixedReason`
+printed under them. A field is fixed for one of two reasons: it is a value read off the
+run rather than a setting (the PD address, the frames the attacker held), or it is a
+setting this bench genuinely cannot express — and it is still *shown*, because "collapse,
+never remove" means nothing that affects behaviour is invisible. A Wiegand bench states
+that Secure Channel is off and says why it cannot be turned on.
+
+**`warning` fields are rendered as live controls with the sentence beside them.** The
+setting is real, the bench will build, and the drill's flag will stop being earnable.
+docs/UI.md records the owner's feedback as *prefer warning over blocking*: watching a
+drill stop working when you turn its defence on is the exercise, not an accident — drill
+3.6 is the downgrade and drill 5.2 is detecting it, and `odr-bus` models both settings of
+`trust_pdcap` precisely so a learner can run the attack and then run the fix. A control
+that refused would forbid that.
 
 `summary` is a **correctness requirement**, not decoration. A learner who cannot see that
 Secure Channel is on while wondering why their replay failed has been misled by the
-interface.
+interface. The summary is computed from the bench that was *built*, so it moves when an
+option moves without the site doing anything.
 
 ### `engine.setConfig(groupId, fieldId, value) → { ok, groups?, error? }`
 
-Applies immediately and affects everything the engine subsequently reports. On `ok:
-false`, return a human-readable `error`; the site surfaces it in the notice bar rather
-than silently discarding the input.
+Applies immediately, **rebuilds the bench**, bumps `engine.version`, and affects
+everything the engine subsequently reports — traffic, timeline, topology, flag. `value`
+crosses as a string for `select` and `number` fields and as a boolean or `"true"`/
+`"false"` for `boolean` ones.
 
-**The wasm engine refuses every call**, and the reason is worth stating rather than
-working around. A bench is assembled by `odr-scenario::scenario::build`, which takes a
-`ScenarioId` and a seed and nothing else. There is no "the same scenario with Secure
-Channel switched on"; the scenario *is* the configuration. Building one here instead
-would mean this crate assembling worlds of its own — a second, divergent definition of
-every bench, sitting above the crate whose whole job is to define them, and a drill could
-then teach something `odr-cli` disagrees with. So the groups report the bench the
-scenario built, in the bench's own values, and the way to see the other setting is to
-open the drill that uses it.
+On `ok: false`, `error` is a human-readable sentence and the site surfaces it in the
+notice bar rather than silently discarding the input. The engine refuses in exactly three
+cases, all of them "this bench cannot be built that way":
 
-This is a real loss against the mock, which let you flip Secure Channel and watch the
-summary line change. What replaces it is that every value shown is now *true of the
-running simulation* rather than of a control panel beside it.
+1. the option is not one this scenario accepts — *"There is no Secure Channel on a
+   Wiegand or clock-and-data pair…"*;
+2. the value is not one of the option's declared legal values, and the error lists them;
+3. there is no such option at all.
+
+It does **not** refuse because a drill is loaded. That case is the `warning` field above.
+
+**Determinism survives an option change.** The same options plus the same seed always
+produce the same bytes, in any order they were set in, on any machine
+(`the_same_options_give_the_same_bytes_across_a_rebuild`).
+
+### `engine.resetConfig() → { ok, groups? }`
+
+Puts every option back to the bench's own setting. New in v3, and it exists because the
+bench a scenario defines is the one a drill's guidance was written against, so there has
+to be one move back to it that is not "remember which four things you changed".
+`loadDrill` and `loadSandbox` also clear the options — changing band or drill is a return
+to a known starting position.
+
+### What the options are
+
+Not a fixed list — ask the engine. As of v3 a full OSDP bench offers:
+
+| id | type | what it does |
+|---|---|---|
+| `secureChannel` | select `off` / `if-available` / `required` | how hard both endpoints insist |
+| `key` | select `scbk-d` / `weak` / `site` | the published default, the sample-code family, or neither |
+| `nullCipher` | boolean | SCS_15/16 — authenticate without encrypting |
+| `macBytes` | number 1–4 | four is the only honest width; shorter is drill 4.2's rig |
+| `trustPdcap` | boolean | believe the unauthenticated capability reply. Drill 3.6's target, and its defence |
+| `acuInstallMode` | boolean | the controller hands out the site key on request |
+| `pdInstallMode` | boolean | the reader will take a key from anyone |
+| `pdClaimsAes` | boolean | what the PDCAP reply says. The entry the downgrade deletes |
+| `baud` | select | the line rate |
+| `pollMs` | number 10–2000 | how much idle traffic there is |
+| `format` | select | the credential format on the wire |
+| `strikeMs` | number | how long the door stays unlocked |
+
+A legacy bench offers `linkType` (`wiegand` / `clockdata`), `format` and `strikeMs`, and
+reports the rest as fixed. A card-layer bench offers `strikeMs`. Drill 0.6 and Module 5
+offer nothing and say why.
 
 ---
 

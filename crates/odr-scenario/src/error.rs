@@ -45,6 +45,21 @@ pub enum ScenarioError {
         /// What that drill wants.
         expected: &'static str,
     },
+    /// A bench option was refused, because this bench cannot be built that
+    /// way.
+    ///
+    /// Reserved for the genuinely impossible — Secure Channel on a Wiegand
+    /// pair, a MAC width on a bench with no MAC, a value outside the option's
+    /// declared set. An option that is merely *unwise* under the loaded drill
+    /// is accepted and carries a
+    /// [`warning`](crate::options::OptionSpec::warning) instead, because
+    /// `docs/UI.md` says to warn rather than block.
+    OptionRefused {
+        /// The option's stable id.
+        option: String,
+        /// Why, in a sentence a learner can read.
+        reason: String,
+    },
     /// The world refused an operation.
     Bus(odr_bus::BusError),
     /// An attacker actor refused, or its attack did not work.
@@ -77,6 +92,9 @@ impl core::fmt::Display for ScenarioError {
             }
             ScenarioError::WrongSubmission { drill, expected } => {
                 write!(f, "drill {drill} expects {expected}")
+            }
+            ScenarioError::OptionRefused { option, reason } => {
+                write!(f, "{option}: {reason}")
             }
             ScenarioError::Bus(e) => write!(f, "world: {e}"),
             ScenarioError::Attack(e) => write!(f, "attacker: {e}"),

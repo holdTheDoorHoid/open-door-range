@@ -80,6 +80,7 @@
 //! | [`flag`] | [`Flag`], [`FlagContext`], [`evaluate`] — the predicates |
 //! | [`run`] | [`Outcome`], [`solve`], [`baseline`] — driving a drill, and the negative control |
 //! | [`tasks`] | [`Task`], [`TaskState`] — drill 4.2's bar that never finishes |
+//! | [`options`] | [`BenchOptions`] — the seam that makes the bench a sandbox |
 //! | [`module5`] | the defensive half wired into drills 5.1 to 5.3 |
 //! | [`error`] | [`ScenarioError`] |
 //!
@@ -119,6 +120,7 @@ pub mod facts;
 pub mod flag;
 pub mod ids;
 pub mod module5;
+pub mod options;
 pub mod run;
 pub mod scenario;
 pub mod submission;
@@ -134,7 +136,10 @@ pub use facts::{
 pub use flag::{evaluate, Flag, FlagContext, Measurement};
 pub use ids::{Band, Completion, DrillId, LinkRole, ModuleId, TapMode, TapPlan};
 pub use module5::DetectionOutcome;
-pub use run::{baseline, solve, Outcome};
+pub use options::{BenchOptions, KeyChoice, LinkChoice, OptionKind, OptionSpec, OptionValue};
+pub use run::{
+    baseline, baseline_with, observe_only, observe_only_with, solve, solve_with, Outcome,
+};
 pub use scenario::{Bench, CardSetup, ScenarioId, Script, ScriptedBadge};
 pub use submission::{FieldSpan, FrameField, Submission};
 pub use tasks::{Task, TaskState};

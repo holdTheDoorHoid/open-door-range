@@ -23,7 +23,7 @@
 import init, { Engine } from '../pkg/odr_wasm.js';
 
 export const ENGINE_KIND = 'wasm';
-export const ENGINE_API_VERSION = 2;
+export const ENGINE_API_VERSION = 3;
 
 /**
  * Memoise a JSON-returning call against the engine's mutation counter.
@@ -98,6 +98,10 @@ class WasmEngine {
 
   setConfig(groupId, fieldId, value) {
     return JSON.parse(this._e.setConfig(groupId, fieldId, String(value)));
+  }
+
+  resetConfig() {
+    return JSON.parse(this._e.resetConfig());
   }
 
   /* ---- §4 topology and taps ---- */

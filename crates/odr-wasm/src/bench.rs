@@ -19,7 +19,7 @@
 //!
 //! | Learner's taps | Runner | What happens |
 //! |---|---|---|
-//! | satisfy the drill's [`TapPlan`] list | [`run::solve`] | the attack is clipped on and performed |
+//! | satisfy the drill's [`TapPlan`](odr_scenario::TapPlan) list | [`run::solve`] | the attack is clipped on and performed |
 //! | present, but not the ones the attack needs | [`run::observe_only`] | a passive probe, the script, no analysis |
 //! | none | [`run::baseline`] | the bench with nothing clipped to it |
 //!
@@ -294,16 +294,29 @@ pub struct Run {
 
 /// Drive one drill at the position the learner has put the bench in.
 pub fn drive(drill: &Drill, seed: u64, taps: &[Tap]) -> Result<Run, String> {
+    drive_with(drill, seed, taps, &odr_scenario::BenchOptions::default())
+}
+
+/// Drive one drill on a bench the learner has reconfigured.
+///
+/// [`BenchOptions::default()`](odr_scenario::BenchOptions) is [`drive`]
+/// exactly — the scenario as its own definition has it.
+pub fn drive_with(
+    drill: &Drill,
+    seed: u64,
+    taps: &[Tap],
+    opts: &odr_scenario::BenchOptions,
+) -> Result<Run, String> {
     let runner = choose_runner(drill, taps);
     let outcome = match runner {
-        Runner::Solve => run::solve(drill.id, seed),
-        Runner::ObserveOnly => match run::observe_only(drill.id, seed) {
+        Runner::Solve => run::solve_with(drill.id, seed, opts),
+        Runner::ObserveOnly => match run::observe_only_with(drill.id, seed, opts) {
             // A scenario with no bench has nothing to clip a probe onto, so
             // the honest fallback is the baseline rather than an error page.
-            Err(_) => run::baseline(drill.id, seed),
+            Err(_) => run::baseline_with(drill.id, seed, opts),
             ok => ok,
         },
-        Runner::Baseline => run::baseline(drill.id, seed),
+        Runner::Baseline => run::baseline_with(drill.id, seed, opts),
     }
     .map_err(|e| format!("{e}"))?;
     Ok(project_outcome(runner, outcome))

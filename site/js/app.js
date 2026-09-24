@@ -221,11 +221,19 @@ function renderConfigView() {
     openGroupId: openConfig.pendingGroup,
     onSet: (g, f, v) => {
       const res = engine.setConfig(g, f, v);
-      // The engine may refuse. Surfacing the reason is the contract (§3): a
-      // control that silently discarded input would be worse than no control.
+      // The engine may refuse — only for a bench that cannot be built that way.
+      // Surfacing the reason is the contract (§3): a control that silently
+      // discarded input would be worse than no control.
       if (res && res.ok === false) notify(res.error);
+      // An option changes the bench, which changes the traffic, the timeline,
+      // the flag and the topology. Re-read everything.
       refreshBench();
     },
+    // v3. engine-mock.js and engine-wasm.js both have it; an older engine
+    // simply gets no reset button.
+    onReset: engine.resetConfig
+      ? () => { engine.resetConfig(); refreshBench(); }
+      : null,
     onTap: (linkId, mode, tapId) => {
       const res = mode === 'remove'
         ? engine.removeTap(tapId)

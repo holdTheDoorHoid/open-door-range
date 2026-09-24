@@ -39,7 +39,7 @@
 //! |---|---|
 //! | [`json`] | the hand-rolled JSON writer |
 //! | [`decode`] | the decode tree and the readable/sealed split |
-//! | [`bench`] | one run, projected into frames, markers and state |
+//! | [`mod@bench`] | one run, projected into frames, markers and state |
 //! | [`config`] | the collapsible groups, derived from the bench |
 //! | [`submit`] | the typed claims seven drills take |
 
@@ -62,6 +62,7 @@ use alloc::vec::Vec;
 
 use odr_bus::Micros;
 use odr_scenario::ids::{Band, DrillId, LinkRole, TapMode};
+use odr_scenario::options::{self as bench_options, BenchOptions};
 use odr_scenario::{catalog, module5, Drill, Facts, Outcome, ScenarioId};
 use wasm_bindgen::prelude::*;
 
@@ -69,7 +70,7 @@ use bench::{Marker, Patch, Run, Runner, Tap};
 use json::{b, n, nu, nz, s, strs, Json};
 
 /// The API version `site/ENGINE-API.md` §0 names. Bump on a breaking change.
-pub const ENGINE_API_VERSION: u32 = 2;
+pub const ENGINE_API_VERSION: u32 = 3;
 
 /// The session seed, derived from the drill so a reload gives the same bench.
 ///
@@ -101,6 +102,7 @@ pub struct Engine {
     seed: u64,
     taps: Vec<Tap>,
     tap_seq: u32,
+    options: BenchOptions,
     values: BTreeMap<String, String>,
     rules: submit::RuleChoice,
     short_done: BTreeMap<String, bool>,
@@ -117,7 +119,8 @@ impl Engine {
         let d = drill.expect("the catalogue is a static table and is never empty");
         let seed = seed_for(d.id);
         let taps = pre_placed(d, Band::Bronze, 0);
-        let run = bench::drive(d, seed, &taps).unwrap_or_else(|_| empty_run());
+        let opts = BenchOptions::default();
+        let run = bench::drive_with(d, seed, &taps, &opts).unwrap_or_else(|_| empty_run());
         Engine {
             version: 1,
             band: Band::Bronze,
@@ -127,6 +130,7 @@ impl Engine {
             seed,
             tap_seq: taps.len() as u32,
             taps,
+            options: BenchOptions::default(),
             values: BTreeMap::new(),
             rules: submit::RuleChoice::default(),
             short_done: BTreeMap::new(),
@@ -249,6 +253,7 @@ impl Engine {
         self.sandbox = false;
         self.scenario = d.scenario;
         self.seed = seed_for(d.id);
+        self.options = BenchOptions::default();
         self.values.clear();
         self.rules = submit::RuleChoice::default();
         self.short_done.clear();
@@ -270,6 +275,7 @@ impl Engine {
         self.sandbox = true;
         self.seed = 0x0D_C0FF_EE00;
         self.taps.clear();
+        self.options = BenchOptions::default();
         self.values.clear();
         self.short_done.clear();
         self.rebuild();
@@ -314,27 +320,56 @@ impl Engine {
     /// `engine.configGroups()`.
     #[wasm_bindgen(js_name = configGroups)]
     pub fn config_groups(&self) -> String {
-        config::groups(&self.run, &self.taps).render()
+        self.groups_json().render()
     }
 
     /// `engine.setConfig(groupId, fieldId, value)`.
     ///
-    /// Always refuses, and says why. See [`config`]: a bench is assembled from a
-    /// scenario id and a seed, and there is no seam for altering one after the
-    /// fact. The site renders these controls disabled and shows this sentence.
+    /// Applies the option through `odr_scenario::options`, rebuilds the bench
+    /// deterministically and bumps the version so the site re-renders. The
+    /// group id is not used to find the field — `odr-scenario` owns the option
+    /// list and each option knows its own group — but a field claimed to be in
+    /// the wrong group is refused, because a site that has drifted from the
+    /// contract should hear about it rather than silently set something else.
     #[wasm_bindgen(js_name = setConfig)]
-    pub fn set_config(&self, group_id: &str, field_id: &str, _value: &str) -> String {
+    pub fn set_config(&mut self, group_id: &str, field_id: &str, value: &str) -> String {
+        let specs = bench_options::describe(self.scenario, self.drill_id(), &self.options);
+        if let Some(spec) = specs.iter().find(|s| s.id == field_id) {
+            if !group_id.is_empty() && spec.group != group_id {
+                return self.refused(
+                    field_id,
+                    format!(
+                        "{field_id} belongs to the {} group, not {group_id}",
+                        spec.group
+                    ),
+                );
+            }
+        }
+        let mut next = self.options.clone();
+        match bench_options::apply(self.scenario, &mut next, field_id, value) {
+            Ok(applied) => {
+                self.options = applied;
+                self.rebuild();
+                let mut o = Json::obj();
+                o.set("ok", b(true)).set("groups", self.groups_json());
+                o.render()
+            }
+            Err(e) => self.refused(field_id, format!("{e}")),
+        }
+    }
+
+    /// `engine.resetConfig()` — put every option back to the bench's own
+    /// setting.
+    ///
+    /// The bench a scenario defines is the thing a drill's guidance was written
+    /// against, so there has to be one move back to it that is not "remember
+    /// what four things you changed".
+    #[wasm_bindgen(js_name = resetConfig)]
+    pub fn reset_config(&mut self) -> String {
+        self.options = BenchOptions::default();
+        self.rebuild();
         let mut o = Json::obj();
-        o.set("ok", b(false))
-            .set(
-                "error",
-                s(format!(
-                    "{group_id}.{field_id} is fixed by this drill's bench. odr-scenario assembles \
-                     a bench from a scenario and a seed; to see the other setting, open the drill \
-                     that uses it."
-                )),
-            )
-            .set("groups", config::groups(&self.run, &self.taps));
+        o.set("ok", b(true)).set("groups", self.groups_json());
         o.render()
     }
 
@@ -940,6 +975,30 @@ impl Engine {
     fn bump(&mut self) {
         self.version = self.version.saturating_add(1);
     }
+
+    fn drill_id(&self) -> Option<DrillId> {
+        self.drill.map(|d| d.id)
+    }
+
+    fn groups_json(&self) -> Json {
+        config::groups(
+            &self.run,
+            &self.taps,
+            self.scenario,
+            self.drill_id(),
+            &self.options,
+        )
+    }
+
+    /// A refusal, with the engine's own sentence and the unchanged groups.
+    fn refused(&self, field_id: &str, error: String) -> String {
+        let _ = field_id;
+        let mut o = Json::obj();
+        o.set("ok", b(false))
+            .set("error", s(error))
+            .set("groups", self.groups_json());
+        o.render()
+    }
 }
 
 impl Default for Engine {
@@ -961,8 +1020,8 @@ impl Engine {
         self.error = None;
         let run = match self.drill {
             Some(d) if d.id.module == 5 => self.drive_module5(d),
-            Some(d) => bench::drive(d, self.seed, &self.taps),
-            None => drive_sandbox(self.scenario, self.seed),
+            Some(d) => bench::drive_with(d, self.seed, &self.taps, &self.options),
+            None => drive_sandbox(self.scenario, self.seed, &self.options),
         };
         match run {
             Ok(r) => self.run = r,
@@ -1251,8 +1310,9 @@ fn pre_placed(drill: &Drill, band: Band, from: u32) -> Vec<Tap> {
 }
 
 /// Free play: the bench, run, with nothing performed on it.
-fn drive_sandbox(scenario: ScenarioId, seed: u64) -> Result<Run, String> {
-    let mut b = odr_scenario::scenario::build(scenario, seed).map_err(|e| format!("{e}"))?;
+fn drive_sandbox(scenario: ScenarioId, seed: u64, opts: &BenchOptions) -> Result<Run, String> {
+    let mut b =
+        odr_scenario::scenario::build_with(scenario, seed, opts).map_err(|e| format!("{e}"))?;
     b.run_script().map_err(|e| format!("{e}"))?;
     let outcome = Outcome {
         drill: DrillId::new(0, 0),

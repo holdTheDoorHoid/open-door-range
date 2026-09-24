@@ -5,21 +5,28 @@
 //! always-visible bench strip. A learner wondering why their replay failed can
 //! see that Secure Channel is on without opening anything.
 //!
-//! # These groups report; they do not set
+//! # These groups set as well as report
 //!
-//! The mock's controls changed a summary line and nothing else. The real engine
-//! cannot do better, and it is worth saying exactly why rather than pretending:
-//! a bench is assembled by [`odr_scenario::scenario::build`], which takes a
-//! [`ScenarioId`](odr_scenario::ScenarioId) and a seed and nothing else. There
-//! is no seam for "the same scenario with Secure Channel switched on", and
-//! inventing one here would mean this crate assembling worlds of its own — a
-//! second, divergent definition of every bench, sitting above the crate whose
-//! whole job is to define them.
+//! Version 2 of the contract said they only reported, and said why: a bench
+//! came from a [`ScenarioId`] and a seed, and
+//! inventing a seam here would have meant this crate assembling worlds of its
+//! own — a second, divergent definition of every bench above the crate whose
+//! job is to define them.
 //!
-//! So each field carries `fixed: true` and a sentence saying which drill to
-//! open for the other setting. That keeps the rule `docs/UI.md` actually
-//! states — nothing that changes the simulation is invisible — while refusing
-//! to offer a control that would lie about what it does.
+//! The seam now exists in the right place. `odr_scenario::options` owns it:
+//! which options a bench accepts, what their legal values are, what each one
+//! does, and what a value costs the drill that is loaded. **This module renders
+//! that list and carries none of its own**, which is the same rule as before —
+//! the bridge transports what the engine below decides.
+//!
+//! So a field is one of two things:
+//!
+//! * **settable** — it came from `odr_scenario::options::describe`, and
+//!   `setConfig` rebuilds the bench through `scenario::build_with`;
+//! * **fixed** — a value derived from the built world that is not a setting at
+//!   all (the PD address, what the attacker ended up holding), or a setting
+//!   this bench genuinely cannot express, which still has to be *visible*.
+//!   `fixedReason` is `odr-scenario`'s own sentence about why.
 //!
 //! # What is deliberately not shown
 //!
@@ -33,96 +40,214 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use odr_bus::{ScRequirement, World};
-use odr_scenario::{Bench, CardSetup};
+use odr_scenario::ids::DrillId;
+use odr_scenario::options::{self, BenchOptions, OptionKind, OptionSpec, OptionValue};
+use odr_scenario::{Bench, CardSetup, ScenarioId};
 
 use crate::bench::{Run, Tap};
 use crate::json::{self, Json};
 
 /// One field of a configuration group.
 struct FieldSpec {
-    id: &'static str,
-    label: &'static str,
+    id: String,
+    label: String,
     kind: &'static str,
     value: Json,
-    help: &'static str,
+    help: String,
     critical: bool,
+    /// `None` when the field is settable.
+    fixed_reason: Option<String>,
+    /// `select` only.
+    choices: Option<Vec<(String, String)>>,
+    /// `number` only.
+    range: Option<(i64, i64, &'static str)>,
+    /// What this value costs the loaded drill. The control stays live.
+    warning: Option<String>,
+    /// The learner moved this away from the bench's own setting.
+    changed: bool,
 }
 
-fn f(
-    id: &'static str,
-    label: &'static str,
-    kind: &'static str,
-    value: Json,
-    help: &'static str,
-) -> FieldSpec {
+/// A read-only field: a value the built world reports that is not a setting.
+fn derived(id: &str, label: &str, kind: &'static str, value: Json, help: &str) -> FieldSpec {
     FieldSpec {
-        id,
-        label,
+        id: id.to_string(),
+        label: label.to_string(),
         kind,
         value,
-        help,
+        help: help.to_string(),
         critical: false,
+        fixed_reason: Some(String::from(
+            "Read off the bench that was built. This is what the simulation did, not a control.",
+        )),
+        choices: None,
+        range: None,
+        warning: None,
+        changed: false,
     }
 }
 
-/// Why every field is read-only. Shown under the control.
-const FIXED: &str =
-    "Fixed by this drill's bench. odr-scenario assembles a bench from a scenario and a seed, so \
-     the way to see the other setting is to open the drill that uses it.";
+/// A field this bench cannot express, shown anyway because "collapse, never
+/// remove" means nothing that affects behaviour is invisible.
+fn unsupported(
+    scenario: ScenarioId,
+    option_id: &'static str,
+    label: &str,
+    kind: &'static str,
+    value: Json,
+    help: &str,
+) -> FieldSpec {
+    FieldSpec {
+        id: option_id.to_string(),
+        label: label.to_string(),
+        kind,
+        value,
+        help: help.to_string(),
+        critical: false,
+        fixed_reason: Some(
+            options::unsupported_reason(scenario, option_id)
+                .unwrap_or_else(|| String::from("This bench does not have one.")),
+        ),
+        choices: None,
+        range: None,
+        warning: None,
+        changed: false,
+    }
+}
+
+/// A settable field, straight from `odr-scenario`'s option list.
+fn from_option(spec: &OptionSpec) -> FieldSpec {
+    let (kind, value, choices, range) = match (&spec.kind, &spec.value) {
+        (OptionKind::Boolean, OptionValue::Bool(v)) => ("boolean", json::b(*v), None, None),
+        (OptionKind::Choice(cs), v) => (
+            "select",
+            json::s(v.as_string()),
+            Some(
+                cs.iter()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect(),
+            ),
+            None,
+        ),
+        (OptionKind::Number { min, max, unit }, OptionValue::Number(n)) => (
+            "number",
+            json::n(*n as f64),
+            None,
+            Some((*min, *max, *unit)),
+        ),
+        // The two halves of an option always agree; this arm exists so the
+        // match is total rather than because it can happen.
+        (_, v) => ("select", json::s(v.as_string()), None, None),
+    };
+    FieldSpec {
+        id: spec.id.to_string(),
+        label: spec.label.to_string(),
+        kind,
+        value,
+        help: spec.help.to_string(),
+        critical: spec.critical,
+        fixed_reason: None,
+        choices,
+        range,
+        warning: spec.warning.clone(),
+        changed: spec.changed,
+    }
+}
 
 /// The groups, in the order the bench strip shows them.
-pub fn groups(run: &Run, taps: &[Tap]) -> Json {
+pub fn groups(
+    run: &Run,
+    taps: &[Tap],
+    scenario: ScenarioId,
+    drill: Option<DrillId>,
+    opts: &BenchOptions,
+) -> Json {
     let bench = run.outcome.bench.as_ref();
+    let specs = options::describe(scenario, drill, opts);
     Json::Arr(alloc::vec![
-        card_group(bench),
-        reader_group(bench),
-        link_group(bench),
-        security_group(bench),
-        controller_group(bench),
+        card_group(bench, scenario, &specs),
+        reader_group(bench, scenario, &specs),
+        link_group(bench, scenario, &specs),
+        security_group(bench, scenario, &specs),
+        controller_group(bench, &specs),
         attacker_group(run, taps),
     ])
 }
 
-fn group(
+/// The settable fields belonging to one group, in the engine's own order.
+fn for_group<'a>(specs: &'a [OptionSpec], group: &str) -> impl Iterator<Item = &'a OptionSpec> {
+    let group = group.to_string();
+    specs.iter().filter(move |s| s.group == group)
+}
+
+/// Which group, and what its summary line says. Separate from the fields so
+/// the one assembler below takes a value rather than eight positional
+/// arguments.
+struct GroupHeader {
     id: &'static str,
     title: &'static str,
     node: &'static str,
     critical: bool,
     summary: String,
     alert: bool,
-    fields: Vec<FieldSpec>,
-) -> Json {
+}
+
+fn group(head: GroupHeader, mut fields: Vec<FieldSpec>, specs: &[OptionSpec]) -> Json {
+    fields.extend(for_group(specs, head.id).map(from_option));
     let mut o = Json::obj();
-    o.set("id", json::s(id))
-        .set("title", json::s(title))
-        .set("node", json::s(node))
-        .set("critical", json::b(critical))
-        .set("summary", json::s(summary))
-        .set("alert", json::b(alert))
+    o.set("id", json::s(head.id))
+        .set("title", json::s(head.title))
+        .set("node", json::s(head.node))
+        .set("critical", json::b(head.critical))
+        .set("summary", json::s(head.summary))
+        .set("alert", json::b(head.alert))
         .set(
             "fields",
-            Json::Arr(
-                fields
-                    .into_iter()
-                    .map(|fs| {
-                        let mut jf = Json::obj();
-                        jf.set("id", json::s(fs.id))
-                            .set("label", json::s(fs.label))
-                            .set("type", json::s(fs.kind))
-                            .set("value", fs.value)
-                            .set("help", json::s(fs.help))
-                            .set("critical", json::b(fs.critical))
-                            .set("fixed", json::b(true))
-                            .set("fixedReason", json::s(FIXED));
-                        jf
-                    })
-                    .collect(),
-            ),
+            Json::Arr(fields.into_iter().map(render_field).collect()),
         );
     o
 }
 
-fn card_group(bench: Option<&Bench>) -> Json {
+fn render_field(fs: FieldSpec) -> Json {
+    let mut jf = Json::obj();
+    jf.set("id", json::s(fs.id))
+        .set("label", json::s(fs.label))
+        .set("type", json::s(fs.kind))
+        .set("value", fs.value)
+        .set("help", json::s(fs.help))
+        .set("critical", json::b(fs.critical))
+        .set("changed", json::b(fs.changed));
+    if let Some(choices) = fs.choices {
+        jf.set(
+            "options",
+            Json::Arr(
+                choices
+                    .into_iter()
+                    .map(|(v, label)| Json::Arr(alloc::vec![json::s(v), json::s(label)]))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some((min, max, unit)) = fs.range {
+        jf.set("min", json::n(min as f64))
+            .set("max", json::n(max as f64))
+            .set("unit", json::s(unit));
+    }
+    match fs.fixed_reason {
+        Some(reason) => {
+            jf.set("fixed", json::b(true))
+                .set("fixedReason", json::s(reason));
+        }
+        None => {
+            jf.set("fixed", json::b(false));
+        }
+    }
+    if let Some(w) = fs.warning {
+        jf.set("warning", json::s(w));
+    }
+    jf
+}
+
+fn card_group(bench: Option<&Bench>, scenario: ScenarioId, specs: &[OptionSpec]) -> Json {
     // A Wiegand bench has no card *layer* — Module 0 is where the credential
     // itself is the subject — but it still has a token in its script, and what
     // technology that token is remains the thing this group is for.
@@ -158,28 +283,44 @@ fn card_group(bench: Option<&Bench>) -> Json {
             ),
         },
     };
-    group(
-        "card",
-        "Credential",
-        "card",
-        false,
-        format!("{name} — provisioned from the session seed"),
-        false,
-        alloc::vec![
-            f("type", "Type", "select", json::s(name), note),
-            f(
-                "values",
-                "Facility code / card number",
+    let mut fields = alloc::vec![
+        derived("type", "Type", "select", json::s(name), note),
+        derived(
+            "values",
+            "Facility code / card number",
+            "select",
+            json::s("generated from the session seed"),
+            "Deliberately not printed here. Drill 1.1's flag is to submit what the engine \
+             transmitted, and a panel that showed it would make that a lookup.",
+        ),
+    ];
+    if options::unsupported_reason(scenario, options::FORMAT).is_some() {
+        if let Some(fmt) = from_script {
+            fields.push(unsupported(
+                scenario,
+                options::FORMAT,
+                "Credential format",
                 "select",
-                json::s("generated from the session seed"),
-                "Deliberately not printed here. Drill 1.1's flag is to submit what the engine \
-                 transmitted, and a panel that showed it would make that a lookup.",
-            ),
-        ],
+                json::s(fmt.name()),
+                "Which bit layout the reader emits and the panel is configured to believe.",
+            ));
+        }
+    }
+    group(
+        GroupHeader {
+            id: "card",
+            title: "Credential",
+            node: "card",
+            critical: false,
+            summary: format!("{name} — provisioned from the session seed"),
+            alert: false,
+        },
+        fields,
+        specs,
     )
 }
 
-fn reader_group(bench: Option<&Bench>) -> Json {
+fn reader_group(bench: Option<&Bench>, scenario: ScenarioId, specs: &[OptionSpec]) -> Json {
     let pd = bench.and_then(|b| {
         b.reader
             .and_then(|r| b.world.reader(r).ok())
@@ -189,71 +330,72 @@ fn reader_group(bench: Option<&Bench>) -> Json {
         Some(pd) => {
             let aes = pd.capabilities.claims_aes128();
             group(
-                "reader",
-                "Reader (PD)",
-                "reader",
-                false,
-                format!(
-                    "PD {}, AES-128 {}",
-                    pd.address,
-                    if aes { "supported" } else { "NOT supported" }
-                ),
-                !aes,
-                alloc::vec![
-                    f(
-                        "address",
-                        "PD address",
-                        "number",
-                        json::n(f64::from(pd.address)),
-                        "Bit 7 of the address byte carries direction, so an address is seven bits.",
+                GroupHeader {
+                    id: "reader",
+                    title: "Reader (PD)",
+                    node: "reader",
+                    critical: false,
+                    summary: format!(
+                        "PD {}, AES-128 {}",
+                        pd.address,
+                        if aes { "supported" } else { "NOT supported" }
                     ),
-                    f(
-                        "supportsCrypto",
-                        "Supports AES-128",
-                        "boolean",
-                        json::b(aes),
-                        "Reported in the PDCAP reply, function code 0x09. This is the entry the \
-                         downgrade attack deletes.",
-                    ),
-                    f(
-                        "installMode",
-                        "PD in install mode",
-                        "boolean",
-                        json::b(pd.install_mode),
-                        "An uncommissioned PD takes a key from anything that turns up claiming the \
-                         default.",
-                    ),
-                ],
+                    alert: !aes,
+                },
+                alloc::vec![derived(
+                    "address",
+                    "PD address",
+                    "number",
+                    json::n(f64::from(pd.address)),
+                    "Bit 7 of the address byte carries direction, so an address is seven bits.",
+                )],
+                specs,
             )
         }
         None => group(
-            "reader",
-            "Reader (PD)",
-            "reader",
-            false,
-            String::from("legacy reader — one-way, nothing to talk back with"),
-            false,
-            alloc::vec![f(
-                "protocol",
-                "Protocol",
-                "select",
-                json::s("Wiegand or clock-and-data"),
-                "A legacy reader drives a pair of wires and has no way of hearing a reply.",
-            )],
+            GroupHeader {
+                id: "reader",
+                title: "Reader (PD)",
+                node: "reader",
+                critical: false,
+                summary: String::from("legacy reader — one-way, nothing to talk back with"),
+                alert: false,
+            },
+            alloc::vec![
+                derived(
+                    "protocol",
+                    "Protocol",
+                    "select",
+                    json::s("Wiegand or clock-and-data"),
+                    "A legacy reader drives a pair of wires and has no way of hearing a reply.",
+                ),
+                unsupported(
+                    scenario,
+                    options::PD_INSTALL,
+                    "Reader install mode",
+                    "boolean",
+                    json::b(false),
+                    "An uncommissioned reader takes a key from anything that asks.",
+                ),
+            ],
+            specs,
         ),
     }
 }
 
-fn link_group(bench: Option<&Bench>) -> Json {
+fn link_group(bench: Option<&Bench>, scenario: ScenarioId, specs: &[OptionSpec]) -> Json {
     let Some(bench) = bench else {
         return group(
-            "link",
-            "Link",
-            "link",
-            false,
-            String::from("no link — this section simulates nothing"),
-            false,
+            GroupHeader {
+                id: "link",
+                title: "Link",
+                node: "link",
+                critical: false,
+                summary: String::from("no link — this section simulates nothing"),
+                alert: false,
+            },
             Vec::new(),
+            specs,
         );
     };
     let (protocol, baud) = match bench.world.link(bench.link) {
@@ -274,41 +416,52 @@ fn link_group(bench: Option<&Bench>) -> Json {
     if let Some(p) = poll {
         summary.push_str(&format!(", {p:.0} polls/s"));
     }
+    let mut fields = Vec::new();
+    if options::unsupported_reason(scenario, options::LINK).is_some() {
+        fields.push(unsupported(
+            scenario,
+            options::LINK,
+            "Wire protocol",
+            "select",
+            json::s(protocol),
+            "Which physical layer sits between reader and panel.",
+        ));
+    }
+    if options::unsupported_reason(scenario, options::BAUD).is_some() {
+        fields.push(unsupported(
+            scenario,
+            options::BAUD,
+            "Line rate",
+            "select",
+            json::s("n/a"),
+            "The line rate of a bus. There is no bus here.",
+        ));
+    }
+    if let Some(p) = poll {
+        fields.push(derived(
+            "pollRate",
+            "Poll rate",
+            "number",
+            json::n(p),
+            "What the poll interval works out to. Real installations poll hard, and the timeline \
+             shows it honestly.",
+        ));
+    }
     group(
-        "link",
-        "Link",
-        "link",
-        false,
-        summary,
-        false,
-        alloc::vec![
-            f(
-                "protocol",
-                "Protocol",
-                "select",
-                json::s(protocol),
-                "Which physical layer sits between reader and panel.",
-            ),
-            f(
-                "baud",
-                "Baud",
-                "select",
-                baud.map_or(json::s("n/a"), |b| json::s(b.to_string())),
-                "The line rate. It is what makes an online MAC forgery cost what drill 4.2 says it \
-                 costs.",
-            ),
-            f(
-                "pollRate",
-                "Poll rate",
-                "select",
-                poll.map_or(json::s("n/a"), |p| json::s(format!("{p:.0} / s"))),
-                "Real installations poll hard. The timeline shows it honestly.",
-            ),
-        ],
+        GroupHeader {
+            id: "link",
+            title: "Link",
+            node: "link",
+            critical: false,
+            summary,
+            alert: false,
+        },
+        fields,
+        specs,
     )
 }
 
-fn security_group(bench: Option<&Bench>) -> Json {
+fn security_group(bench: Option<&Bench>, scenario: ScenarioId, specs: &[OptionSpec]) -> Json {
     let acu = bench.and_then(|b| {
         b.world
             .controllers()
@@ -318,25 +471,29 @@ fn security_group(bench: Option<&Bench>) -> Json {
     });
     let Some(acu) = acu else {
         return group(
-            "security",
-            "Secure Channel",
-            "controller",
-            true,
-            String::from("OFF — there is no secure channel on a Wiegand pair, ever"),
-            true,
-            alloc::vec![f(
-                "enabled",
+            GroupHeader {
+                id: "security",
+                title: "Secure Channel",
+                node: "controller",
+                critical: true,
+                summary: String::from("OFF — there is no secure channel on a Wiegand pair, ever"),
+                alert: true,
+            },
+            alloc::vec![unsupported(
+                scenario,
+                options::SECURE_CHANNEL,
                 "Secure Channel",
                 "boolean",
                 json::b(false),
-                "Wiegand has no cryptography in its specification. There is nothing here to turn \
-                 on.",
+                "Whether the link runs an authenticated, encrypted channel.",
             )],
+            specs,
         );
     };
     let on = acu.sc.wants_secure_channel();
     let key = match acu.key_type {
         odr_osdp::KeyType::Default => "SCBK-D (the published default)",
+        _ if odr_osdp::weak_keys::is_weak(&acu.scbk) => "a key from the published sample family",
         _ => "site key",
     };
     let mode = if acu.encrypt_payloads {
@@ -351,59 +508,32 @@ fn security_group(bench: Option<&Bench>) -> Json {
         String::from("OFF — everything on this bus is in the clear")
     };
     group(
-        "security",
-        "Secure Channel",
-        "controller",
-        true,
-        summary,
-        !on,
-        alloc::vec![
-            f(
-                "enabled",
-                "Secure Channel",
-                "boolean",
-                json::b(on),
-                "OSDP ships with this off. Most deployments leave it off.",
-            ),
-            f(
-                "key",
-                "Base key",
-                "select",
-                json::s(key),
-                "SCBK-D is printed in the specification. Everybody has it.",
-            ),
-            f(
-                "mode",
-                "Cipher mode",
-                "select",
-                json::s(mode),
-                "SCS_15/16 are null ciphers. They authenticate and do not conceal.",
-            ),
-            FieldSpec {
-                critical: mac_bits < 32,
-                ..f(
-                    "macBits",
-                    "MAC length",
-                    "select",
-                    json::s(format!("{mac_bits} bits")),
-                    "OSDP truncates to four bytes. Drill 4.2 rigs this bench shorter so a forgery \
-                     completes while you watch, and says so.",
-                )
-            },
-        ],
+        GroupHeader {
+            id: "security",
+            title: "Secure Channel",
+            node: "controller",
+            critical: true,
+            summary,
+            alert: !on,
+        },
+        Vec::new(),
+        specs,
     )
 }
 
-fn controller_group(bench: Option<&Bench>) -> Json {
+fn controller_group(bench: Option<&Bench>, specs: &[OptionSpec]) -> Json {
     let Some(bench) = bench else {
         return group(
-            "controller",
-            "Controller (ACU)",
-            "controller",
-            false,
-            String::from("no controller — this section simulates nothing"),
-            false,
+            GroupHeader {
+                id: "controller",
+                title: "Controller (ACU)",
+                node: "controller",
+                critical: false,
+                summary: String::from("no controller — this section simulates nothing"),
+                alert: false,
+            },
             Vec::new(),
+            specs,
         );
     };
     let acu = bench
@@ -421,7 +551,6 @@ fn controller_group(bench: Option<&Bench>) -> Json {
     let requires = acu
         .as_ref()
         .is_some_and(|a| matches!(a.sc, ScRequirement::Required));
-    let trusts = acu.as_ref().is_some_and(|a| a.trust_pdcap);
     let summary = format!(
         "{}{} · strike {:.1} s",
         if requires {
@@ -435,48 +564,16 @@ fn controller_group(bench: Option<&Bench>) -> Json {
         strike_ms as f64 / 1000.0
     );
     group(
-        "controller",
-        "Controller (ACU)",
-        "controller",
-        false,
-        summary,
-        install,
-        alloc::vec![
-            f(
-                "requireSecure",
-                "Require Secure Channel",
-                "boolean",
-                json::b(requires),
-                "If set, the controller refuses to run a PD that reports no crypto support — \
-                 unless something rewrites that report.",
-            ),
-            FieldSpec {
-                critical: install,
-                ..f(
-                    "installMode",
-                    "Install mode",
-                    "boolean",
-                    json::b(install),
-                    "A controller in install mode hands out the SCBK on request. Installers leave \
-                     it on.",
-                )
-            },
-            f(
-                "trustPdcap",
-                "Trust the PDCAP reply",
-                "boolean",
-                json::b(trusts),
-                "Nothing authenticates a capability report, so this is the downgrade attack's \
-                 target.",
-            ),
-            f(
-                "strikeMs",
-                "Strike time",
-                "number",
-                json::n(strike_ms as f64),
-                "How long the door stays unlocked after a grant.",
-            ),
-        ],
+        GroupHeader {
+            id: "controller",
+            title: "Controller (ACU)",
+            node: "controller",
+            critical: false,
+            summary,
+            alert: install,
+        },
+        Vec::new(),
+        specs,
     )
 }
 
@@ -495,14 +592,16 @@ fn attacker_group(run: &Run, taps: &[Tap]) -> Json {
         )
     };
     group(
-        "attacker",
-        "Attacker position",
-        "tap",
-        false,
-        summary,
-        false,
+        GroupHeader {
+            id: "attacker",
+            title: "Attacker position",
+            node: "tap",
+            critical: false,
+            summary,
+            alert: false,
+        },
         alloc::vec![
-            f(
+            derived(
                 "runner",
                 "What the bench ran",
                 "select",
@@ -511,7 +610,7 @@ fn attacker_group(run: &Run, taps: &[Tap]) -> Json {
                  performed; with a probe and nothing else it listens; with nothing clipped on the \
                  bench simply runs.",
             ),
-            f(
+            derived(
                 "keys",
                 "Keys recovered",
                 "number",
@@ -519,7 +618,7 @@ fn attacker_group(run: &Run, taps: &[Tap]) -> Json {
                 "Every one carries a provenance saying how it was obtained. Nothing here was \
                  handed to the attacker.",
             ),
-            f(
+            derived(
                 "captured",
                 "Frames held",
                 "number",
@@ -527,6 +626,7 @@ fn attacker_group(run: &Run, taps: &[Tap]) -> Json {
                 "Frames the attacker kept, payloads and all — readable or not.",
             ),
         ],
+        &[],
     )
 }
 

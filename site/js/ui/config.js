@@ -13,11 +13,24 @@
  * refused by the engine, because two identical probes are not a second
  * capability.
  *
- * FIELDS THE ENGINE MARKS `fixed` ARE RENDERED DISABLED, with the engine's own
- * sentence underneath. A bench is assembled from a scenario and a seed, and a
- * control that pretended to change one after the fact would be the interface
- * lying about what it does — which is the thing docs/UI.md's "collapse, never
- * remove" rule exists to prevent.
+ * THE CONTROLS ARE LIVE AGAIN (contract v3). The engine composes the option
+ * list — which options this bench accepts, their legal values and what each one
+ * does — and this file renders it. It carries no list of its own: a control
+ * here that the engine had not offered would be a second, divergent statement
+ * of what a bench is.
+ *
+ * TWO KINDS OF "NO", AND THEY LOOK DIFFERENT.
+ *
+ *   `fixed`   — the bench genuinely cannot express this, or it is a value read
+ *               off the run rather than a setting. Rendered as TEXT, with the
+ *               engine's own sentence under it. A disabled input that looked
+ *               settable would be the interface telling a small lie.
+ *
+ *   `warning` — the setting is real and it would break the drill that is
+ *               loaded. Rendered as a LIVE control with the warning beside it,
+ *               because docs/UI.md records the owner's feedback as prefer
+ *               warning over blocking. Watching a drill stop working when you
+ *               turn its defence on is the exercise, not an accident.
  */
 
 import { el, clear } from '../util.js';
@@ -28,7 +41,7 @@ const TAP_MODES = [
   ['inline', 'Inline (implant)', 'The link is CUT and everything passes through the tap. This is the one that can rewrite a frame in flight.'],
 ];
 
-export function renderConfig(host, { groups, topology, openGroupId, onSet, onTap }) {
+export function renderConfig(host, { groups, topology, openGroupId, onSet, onReset, onTap }) {
   clear(host);
 
   // ---- taps -----------------------------------------------------------
@@ -80,13 +93,14 @@ export function renderConfig(host, { groups, topology, openGroupId, onSet, onTap
   tapBox.append(tapFields);
   host.append(tapBox);
 
-  // ---- everything else ------------------------------------------------
-  // The engine reports most of these and will not be asked to change them.
-  // Said once, here, rather than repeated under every control.
-  const fixed = groups.flatMap((g) => g.fields).find((f) => f.fixed);
-  if (fixed) {
-    host.append(el('p', { class: 'help help--fixed', style: 'margin:0 0 var(--sp-3);max-width:60ch' },
-      fixed.fixedReason));
+  // ---- the bench itself -----------------------------------------------
+  const changed = groups.reduce((n, g) => n + g.fields.filter((f) => f.changed).length, 0);
+  if (changed && onReset) {
+    // One move back to the bench the scenario defines, which is the bench the
+    // drill's guidance was written against.
+    host.append(el('div', { class: 'notice', style: 'margin:0 0 var(--sp-3)', role: 'status' },
+      el('span', {}, `You have changed ${changed} setting${changed === 1 ? '' : 's'} on this bench. `),
+      el('button', { class: 'btn btn--ghost', onclick: () => onReset() }, 'Reset to the bench’s own settings')));
   }
 
   for (const g of groups) {
@@ -102,49 +116,90 @@ export function renderConfig(host, { groups, topology, openGroupId, onSet, onTap
         el('span', { class: 'cfgsummary__line' }, g.summary))));
 
     const fields = el('div', { class: 'cfgfields' });
-    for (const f of g.fields) {
-      const id = `f-${g.id}-${f.id}`;
-      let control;
-      if (f.fixed) {
-        // The engine reports this value and cannot be asked to change it.
-        // Showing it as text rather than as a dead control is the honest
-        // rendering: it is still visible, it is just not yours to set.
-        control = el('output', { id, class: 'cfgvalue' },
-          f.type === 'boolean' ? (f.value ? 'yes' : 'no') : String(f.value));
-      } else if (f.type === 'boolean') {
-        control = el('input', {
-          type: 'checkbox', id, checked: f.value ? true : null,
-          onchange: (e) => onSet(g.id, f.id, e.target.checked),
-        });
-      } else if (f.type === 'select') {
-        control = el('select', { id, onchange: (e) => onSet(g.id, f.id, e.target.value) },
-          ...f.options.map(([v, label]) => el('option', { value: v, selected: String(f.value) === String(v) ? true : null }, label)));
-      } else {
-        control = el('input', {
-          type: 'number', id, value: f.value, min: f.min, max: f.max,
-          onchange: (e) => onSet(g.id, f.id, e.target.value),
-        });
-      }
-      fields.append(el('div', { class: 'cfgfield' },
-        el('label', { for: id }, f.label, f.critical ? el('span', { class: 'chip--alert', style: 'margin-left:.4em' }, '▲') : null),
-        control));
-      if (f.help) fields.append(el('p', { class: 'help' }, f.help));
-    }
+    for (const f of g.fields) fields.append(...renderField(g, f, onSet));
     box.append(fields);
     host.append(box);
   }
+}
+
+/** One field: its label, its control, its help, and anything it costs. */
+function renderField(g, f, onSet) {
+  const id = `f-${g.id}-${f.id}`;
+  const out = [];
+  let control;
+
+  if (f.fixed) {
+    // The engine reports this value and cannot be asked to change it. Showing
+    // it as text rather than as a dead control is the honest rendering: it is
+    // still visible, it is just not yours to set.
+    control = el('output', { id, class: 'cfgvalue' }, displayValue(f));
+  } else if (f.type === 'boolean') {
+    control = el('input', {
+      type: 'checkbox', id, checked: f.value ? true : null,
+      'aria-describedby': f.warning ? `${id}-warn` : null,
+      onchange: (e) => onSet(g.id, f.id, e.target.checked),
+    });
+  } else if (f.type === 'select') {
+    control = el('select', {
+      id,
+      'aria-describedby': f.warning ? `${id}-warn` : null,
+      onchange: (e) => onSet(g.id, f.id, e.target.value),
+    }, ...(f.options || []).map(([v, label]) =>
+      el('option', { value: v, selected: String(f.value) === String(v) ? true : null }, label)));
+  } else {
+    control = el('input', {
+      type: 'number', id, value: f.value, min: f.min, max: f.max,
+      'aria-describedby': f.warning ? `${id}-warn` : null,
+      onchange: (e) => onSet(g.id, f.id, e.target.value),
+    });
+  }
+
+  const label = el('label', { for: id }, f.label);
+  // Never colour alone (docs/UI.md, accessibility): the shape and the word
+  // carry it too.
+  if (f.critical) label.append(el('span', { class: 'chip--alert', style: 'margin-left:.4em' }, '▲'));
+  if (f.changed) label.append(el('span', { class: 'chip__k', style: 'margin-left:.4em' }, 'changed'));
+
+  const row = el('div', { class: 'cfgfield' }, label, control);
+  if (f.unit && !f.fixed && f.type === 'number') {
+    row.append(el('span', { class: 'help', style: 'margin:0;grid-column:2' }, f.unit));
+  }
+  out.push(row);
+
+  if (f.help) out.push(el('p', { class: 'help' }, f.help));
+  if (f.warning) {
+    // Said plainly, next to the control, with the control still live.
+    out.push(el('p', {
+      id: `${id}-warn`, class: 'notice', role: 'status',
+      style: 'margin:0 0 var(--sp-2);font-size:var(--fs-xs)',
+    }, el('strong', {}, '▲ '), f.warning));
+  }
+  if (f.fixed && f.fixedReason) {
+    out.push(el('p', { class: 'help help--fixed' }, f.fixedReason));
+  }
+  return out;
+}
+
+function displayValue(f) {
+  if (f.type === 'boolean') return f.value ? 'yes' : 'no';
+  const match = (f.options || []).find(([v]) => String(v) === String(f.value));
+  return match ? match[1] : String(f.value);
 }
 
 export function renderBenchState(host, { groups, onOpen }) {
   clear(host);
   host.append(el('span', { class: 'benchstate__label' }, 'Bench'));
   for (const g of groups) {
+    const touched = g.fields.some((f) => f.changed);
     host.append(el('button', {
       class: 'chip' + (g.alert ? ' chip--alert' : (g.id === 'security' ? ' chip--on' : '')),
       onclick: () => onOpen(g.id),
       title: `Open the ${g.title} panel`,
     },
       el('span', { class: 'chip__k' }, g.title + ':'),
-      el('span', { class: 'chip__v' }, g.summary)));
+      el('span', { class: 'chip__v' }, g.summary),
+      // The strip has to keep showing anything that changes behaviour, and
+      // "somebody moved this" is part of that.
+      touched ? el('span', { class: 'chip__k', style: 'margin-left:.4em' }, '· changed') : null));
   }
 }

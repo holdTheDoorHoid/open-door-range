@@ -58,25 +58,38 @@ export function renderDrill(refs, { drill, band, flag, complete }) {
   }
 
   // ---- flag ----------------------------------------------------------
+  //
+  // TWO STATES, NOT ONE. `flag.earned` is the engine's verdict on the bench as
+  // it stands right now; `complete` is this browser's record that the drill was
+  // finished at some point. They came apart the moment the bench became
+  // configurable: reconfigure a drill's bench and its flag stops being earned,
+  // which is the whole point of being able to turn a defence on and watch the
+  // attack fail. Showing the recorded state and hiding the live outstanding
+  // list would tell a learner their attack still works when it does not.
   clear(refs.flag);
-  const earned = flag.earned || complete;
+  const live = !!flag.earned;
+  const earned = live || complete;
   refs.flag.className = 'flagcard' + (earned ? ' flagcard--earned' : '');
   refs.flag.append(el('div', { class: 'flagcard__state' },
-    el('span', { class: 'flagcard__glyph', 'aria-hidden': 'true' }, earned ? '⚑' : '○'),
-    el('span', {}, earned ? 'FLAG EARNED' : (flag.simulated === false ? 'REFERENCE — no flag' : 'Flag not yet earned'))));
+    el('span', { class: 'flagcard__glyph', 'aria-hidden': 'true' }, live ? '⚑' : (complete ? '⚐' : '○')),
+    el('span', {}, live
+      ? 'FLAG EARNED'
+      : (complete
+        ? 'EARNED EARLIER — not on this bench'
+        : (flag.simulated === false ? 'REFERENCE — no flag' : 'Flag not yet earned')))));
   refs.flag.append(el('p', { class: 'flagcard__pred' },
     el('strong', {}, 'Predicate: '), flag.predicate || '—'));
   if (flag.evidence && flag.evidence.length) {
     refs.flag.append(el('p', { style: 'font-size:var(--fs-xs);margin:.2rem 0 0;color:var(--text-muted)' }, 'Engine evidence:'));
     refs.flag.append(el('ul', {}, ...flag.evidence.map((e) => el('li', {}, e))));
   }
-  if (!earned && flag.outstanding && flag.outstanding.length) {
+  if (!live && flag.outstanding && flag.outstanding.length) {
     refs.flag.append(el('p', { style: 'font-size:var(--fs-xs);margin:.4rem 0 0;color:var(--text-muted)' }, 'Outstanding:'));
     refs.flag.append(el('ul', {}, ...flag.outstanding.map((e) => el('li', {}, e))));
   }
-  if (complete && !flag.earned) {
+  if (complete && !live) {
     refs.flag.append(el('p', { style: 'font-size:var(--fs-xs);color:var(--text-muted);margin:.4rem 0 0' },
-      'Recorded complete in this browser on an earlier run.'));
+      'Recorded complete in this browser on an earlier run. The bench as it stands now does not earn it.'));
   }
 }
 

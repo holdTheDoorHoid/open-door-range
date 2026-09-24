@@ -55,6 +55,7 @@ use crate::facts::{
 use crate::flag::{evaluate, Flag, FlagContext};
 use crate::ids::DrillId;
 use crate::module5;
+use crate::options::BenchOptions;
 use crate::scenario::{self, Bench, ScenarioId};
 use crate::submission::Submission;
 use crate::tasks::{Task, TaskState};
@@ -178,6 +179,13 @@ impl Outcome {
 /// The negative control. Whatever this produces, the flag must not be earned
 /// by it.
 pub fn baseline(drill_id: DrillId, seed: u64) -> Result<Outcome> {
+    baseline_with(drill_id, seed, &BenchOptions::default())
+}
+
+/// [`baseline`], on a bench the learner has reconfigured.
+///
+/// [`BenchOptions::default()`] is [`baseline`] exactly.
+pub fn baseline_with(drill_id: DrillId, seed: u64, opts: &BenchOptions) -> Result<Outcome> {
     let drill = catalog::require(drill_id)?;
     if drill.scenario == ScenarioId::MonitoredDay {
         // A rule set that reports nothing. It is quiet on the benign traffic
@@ -204,7 +212,7 @@ pub fn baseline(drill_id: DrillId, seed: u64) -> Result<Outcome> {
             facts: Facts::default(),
         });
     }
-    let mut bench = scenario::build(drill.scenario, seed)?;
+    let mut bench = scenario::build_with(drill.scenario, seed, opts)?;
     bench.run_script()?;
     let facts = Facts {
         site_key: bench.site_key,
@@ -233,11 +241,16 @@ pub fn baseline(drill_id: DrillId, seed: u64) -> Result<Outcome> {
 ///
 /// Returns [`ScenarioError::NotSimulated`] for a drill with no bench.
 pub fn observe_only(drill_id: DrillId, seed: u64) -> Result<Outcome> {
+    observe_only_with(drill_id, seed, &BenchOptions::default())
+}
+
+/// [`observe_only`], on a bench the learner has reconfigured.
+pub fn observe_only_with(drill_id: DrillId, seed: u64, opts: &BenchOptions) -> Result<Outcome> {
     let drill = catalog::require(drill_id)?;
     if !drill.scenario.is_bench() {
         return Err(ScenarioError::NotSimulated { drill: drill_id });
     }
-    let mut bench = scenario::build(drill.scenario, seed)?;
+    let mut bench = scenario::build_with(drill.scenario, seed, opts)?;
     let mut ear = PassiveEavesdropper::new("a clip and no further ideas");
     ear.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -257,6 +270,33 @@ pub fn observe_only(drill_id: DrillId, seed: u64) -> Result<Outcome> {
 
 /// **Run a drill to completion, performing its attack.**
 pub fn solve(drill_id: DrillId, seed: u64) -> Result<Outcome> {
+    solve_with(drill_id, seed, &BenchOptions::default())
+}
+
+/// **Run a drill to completion on a bench the learner has reconfigured.**
+///
+/// The attack is performed the same way whatever the options say, and the
+/// predicate is unchanged — so a bench reconfigured into one the attack cannot
+/// work on simply does not earn the flag, with the `outstanding` list saying
+/// what is missing. That is the point: `odr-bus` models both settings of
+/// `trust_pdcap` so a drill can run the attack and then run the fix and watch
+/// it hold, and this is where that happens.
+pub fn solve_with(drill_id: DrillId, seed: u64, opts: &BenchOptions) -> Result<Outcome> {
+    match attempt(drill_id, seed, opts) {
+        // **A reconfigured bench the attack cannot run on is not an error.**
+        // An actor that gives up — "no handshake has been captured" on a bench
+        // whose Secure Channel the learner turned off — is reporting the
+        // consequence of a setting, not a fault. The bench is still run, the
+        // flag comes back unearned with its `outstanding` list, and the
+        // interface has already printed the warning beside the control that
+        // said this would happen. On an unmodified bench the error stands,
+        // because there it really would be a bug.
+        Err(e) if !opts.is_empty() => baseline_with(drill_id, seed, opts).map_err(|_| e),
+        other => other,
+    }
+}
+
+fn attempt(drill_id: DrillId, seed: u64, opts: &BenchOptions) -> Result<Outcome> {
     let drill = catalog::require(drill_id)?;
     let facts = Facts {
         attack_performed: true,
@@ -264,11 +304,11 @@ pub fn solve(drill_id: DrillId, seed: u64) -> Result<Outcome> {
     };
 
     match (drill_id.module, drill_id.index) {
-        (0, 1) => solve_0_1(drill.scenario, seed, facts),
-        (0, 2) => solve_0_2(drill.scenario, seed, facts),
-        (0, 3) => solve_0_3(drill.scenario, seed, facts),
-        (0, 4) => solve_0_4(drill.scenario, seed, facts),
-        (0, 5) => solve_0_5(drill.scenario, seed, facts),
+        (0, 1) => solve_0_1(drill.scenario, seed, opts, facts),
+        (0, 2) => solve_0_2(drill.scenario, seed, opts, facts),
+        (0, 3) => solve_0_3(drill.scenario, seed, opts, facts),
+        (0, 4) => solve_0_4(drill.scenario, seed, opts, facts),
+        (0, 5) => solve_0_5(drill.scenario, seed, opts, facts),
         (0, 6) => Ok(Outcome {
             drill: drill_id,
             seed,
@@ -276,24 +316,24 @@ pub fn solve(drill_id: DrillId, seed: u64) -> Result<Outcome> {
             knowledge: None,
             facts,
         }),
-        (1, 1) => solve_1_1(drill.scenario, seed, facts),
-        (1, 2) => solve_1_2(drill.scenario, seed, facts),
-        (1, 3) | (1, 6) => solve_replay(drill.scenario, seed, facts),
-        (1, 4) => solve_1_4(drill.scenario, seed, facts),
-        (1, 5) => solve_1_5(drill.scenario, seed, facts),
-        (2, 1) => solve_2_1(drill.scenario, seed, facts),
-        (2, 2) => solve_2_2(drill.scenario, seed, facts),
-        (2, 3) => solve_2_3(drill.scenario, seed, facts),
-        (2, 4) => solve_2_4(drill.scenario, seed, facts),
-        (3, 1) => solve_3_1(drill.scenario, seed, facts),
-        (3, 2) | (3, 3) => solve_weak_key(drill.scenario, seed, facts),
-        (3, 4) => solve_3_4(drill.scenario, seed, facts),
-        (3, 5) => solve_3_5(drill.scenario, seed, facts),
-        (3, 6) => solve_3_6(drill.scenario, seed, facts),
-        (4, 1) => solve_4_1(drill.scenario, seed, facts),
-        (4, 2) => solve_4_2(drill.scenario, seed, facts),
-        (4, 3) => solve_4_3(drill.scenario, seed, facts),
-        (4, 4) => solve_4_4(drill.scenario, seed, facts),
+        (1, 1) => solve_1_1(drill.scenario, seed, opts, facts),
+        (1, 2) => solve_1_2(drill.scenario, seed, opts, facts),
+        (1, 3) | (1, 6) => solve_replay(drill.scenario, seed, opts, facts),
+        (1, 4) => solve_1_4(drill.scenario, seed, opts, facts),
+        (1, 5) => solve_1_5(drill.scenario, seed, opts, facts),
+        (2, 1) => solve_2_1(drill.scenario, seed, opts, facts),
+        (2, 2) => solve_2_2(drill.scenario, seed, opts, facts),
+        (2, 3) => solve_2_3(drill.scenario, seed, opts, facts),
+        (2, 4) => solve_2_4(drill.scenario, seed, opts, facts),
+        (3, 1) => solve_3_1(drill.scenario, seed, opts, facts),
+        (3, 2) | (3, 3) => solve_weak_key(drill.scenario, seed, opts, facts),
+        (3, 4) => solve_3_4(drill.scenario, seed, opts, facts),
+        (3, 5) => solve_3_5(drill.scenario, seed, opts, facts),
+        (3, 6) => solve_3_6(drill.scenario, seed, opts, facts),
+        (4, 1) => solve_4_1(drill.scenario, seed, opts, facts),
+        (4, 2) => solve_4_2(drill.scenario, seed, opts, facts),
+        (4, 3) => solve_4_3(drill.scenario, seed, opts, facts),
+        (4, 4) => solve_4_4(drill.scenario, seed, opts, facts),
         (5, _) => solve_module_5(seed, facts),
         _ => Err(ScenarioError::UnknownDrill {
             id: drill_id.as_string(),
@@ -396,8 +436,13 @@ fn no_reader(drill: DrillId) -> ScenarioError {
 // Module 0
 // ---------------------------------------------------------------------------
 
-fn solve_0_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_0_1(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let card = scenario::build_card(&bench.cards).ok_or(ScenarioError::DidNotRun {
         drill: DrillId::new(0, 1),
         detail: String::from("this bench has no 125 kHz tag"),
@@ -424,8 +469,13 @@ fn solve_0_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, None, facts))
 }
 
-fn solve_0_2(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_0_2(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let victim = scenario::build_card(&bench.cards).ok_or(ScenarioError::DidNotRun {
         drill: DrillId::new(0, 2),
         detail: String::from("this bench has no victim card"),
@@ -444,8 +494,13 @@ fn solve_0_2(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_0_3(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_0_3(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let card = scenario::build_card(&bench.cards).ok_or(ScenarioError::DidNotRun {
         drill: DrillId::new(0, 3),
         detail: String::from("this bench has no prox card"),
@@ -464,8 +519,13 @@ fn solve_0_3(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, None, facts))
 }
 
-fn solve_0_4(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let bench = scenario::build(scenario, seed)?;
+fn solve_0_4(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let bench = scenario::build_with(scenario, seed, opts)?;
     let mut card = scenario::build_mifare_card(&bench.cards).ok_or(ScenarioError::DidNotRun {
         drill: DrillId::new(0, 4),
         detail: String::from("this bench has no MIFARE card"),
@@ -515,8 +575,13 @@ fn solve_0_4(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_0_5(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let bench = scenario::build(scenario, seed)?;
+fn solve_0_5(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let bench = scenario::build_with(scenario, seed, opts)?;
     let mut card = scenario::build_desfire_card(&bench.cards).ok_or(ScenarioError::DidNotRun {
         drill: DrillId::new(0, 5),
         detail: String::from("this bench has no DESFire card"),
@@ -535,8 +600,13 @@ fn solve_0_5(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
 // Module 1
 // ---------------------------------------------------------------------------
 
-fn solve_1_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_1_1(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut sniffer = Sniffer::new("ceiling void");
     sniffer.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -546,8 +616,13 @@ fn solve_1_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_1_2(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_1_2(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let reader = bench.reader.ok_or_else(|| no_reader(DrillId::new(1, 2)))?;
     // The neighbouring number is whatever the panel is holding. An attacker at
     // the door with an implant does not have the access list, but a learner who
@@ -576,8 +651,13 @@ fn solve_1_2(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
 
 /// Drills 1.3 and 1.6: capture one badge-in, take the card away, put the bits
 /// back.
-fn solve_replay(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_replay(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut replayer = Replayer::new("replay box");
     replayer.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -591,8 +671,13 @@ fn solve_replay(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_1_4(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_1_4(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let reader = bench.reader.ok_or_else(|| no_reader(DrillId::new(1, 4)))?;
     let manager = enrolled(&bench.world)
         .into_iter()
@@ -622,8 +707,13 @@ fn solve_1_4(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_1_5(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_1_5(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let target = enrolled(&bench.world)
         .into_iter()
         .next()
@@ -678,8 +768,13 @@ fn sweep_task(forcer: &BruteForcer, report: &odr_attack::SweepReport) -> Task {
 // Module 2
 // ---------------------------------------------------------------------------
 
-fn solve_2_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_2_1(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut ear = PassiveEavesdropper::new("clip on the pair");
     ear.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -689,8 +784,13 @@ fn solve_2_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_2_2(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_2_2(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut ear = PassiveEavesdropper::new("clip on the pair");
     ear.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -700,8 +800,13 @@ fn solve_2_2(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_2_3(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_2_3(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut injector = Injector::new("laptop and a dongle");
     injector.attach(&mut bench.world, bench.link)?;
 
@@ -720,8 +825,13 @@ fn solve_2_3(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_2_4(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_2_4(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     bench.world.run_until(1_000_000)?;
     let before = bench.world.log().len();
     let forced_at_us = bench.world.now();
@@ -779,8 +889,13 @@ fn solve_2_4(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
 // Module 3
 // ---------------------------------------------------------------------------
 
-fn solve_3_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_3_1(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut ear = PassiveEavesdropper::new("clip on the pair");
     ear.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -791,8 +906,13 @@ fn solve_3_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
 }
 
 /// Drills 3.2 and 3.3: one captured handshake, and the published key family.
-fn solve_weak_key(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_weak_key(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut cracker = WeakKeyCracker::new("analyser");
     cracker.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -805,8 +925,13 @@ fn solve_weak_key(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<O
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_3_4(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_3_4(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let address = bench.spare_address.ok_or(ScenarioError::DidNotRun {
         drill: DrillId::new(3, 4),
         detail: String::from("this bench polls no unfitted address"),
@@ -818,8 +943,13 @@ fn solve_3_4(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_3_5(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_3_5(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut capturer = KeysetCapturer::new("installer's friend");
     capturer.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -847,8 +977,13 @@ fn solve_3_5(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_3_6(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_3_6(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut downgrader = Downgrader::new("inline implant");
     downgrader.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -860,8 +995,13 @@ fn solve_3_6(scenario: ScenarioId, seed: u64, facts: Facts) -> Result<Outcome> {
 // Module 4
 // ---------------------------------------------------------------------------
 
-fn solve_4_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_4_1(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut analyst = TrafficAnalyst::new("a box in the riser");
     analyst.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
@@ -873,8 +1013,13 @@ fn solve_4_1(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_4_2(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_4_2(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut forger = MacForger::new("forger", bench.address, seed ^ 0x0402);
     let tap = forger.attach(&mut bench.world, bench.link)?;
 
@@ -915,8 +1060,13 @@ fn solve_4_2(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_4_3(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_4_3(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
 
     // One pooled knowledge base, two boxes: a passive analyser that cracks the
     // commissioning key, and an inline implant that freezes the chain.
@@ -980,8 +1130,13 @@ fn solve_4_3(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcom
     Ok(finish(seed, bench, Some(knowledge), facts))
 }
 
-fn solve_4_4(scenario: ScenarioId, seed: u64, mut facts: Facts) -> Result<Outcome> {
-    let mut bench = scenario::build(scenario, seed)?;
+fn solve_4_4(
+    scenario: ScenarioId,
+    seed: u64,
+    opts: &BenchOptions,
+    mut facts: Facts,
+) -> Result<Outcome> {
+    let mut bench = scenario::build_with(scenario, seed, opts)?;
     let mut reader = NullCipherReader::new("clip on the pair");
     reader.attach(&mut bench.world, bench.link)?;
     bench.run_script()?;
