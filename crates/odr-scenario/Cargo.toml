@@ -4,5 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "The Open Door Range drills: scenario definitions, per-band guidance, and flag predicates evaluated against engine state rather than against answer strings"
 
 [dependencies]
+# A drill assembles a world, runs an attacker against it, and asks the
+# defensive half what could have been seen. Those four crates, plus the two
+# protocol libraries a predicate has to speak in order to read the log.
+odr-attack = { workspace = true }
+odr-bus = { workspace = true }
+odr-credential = { workspace = true }
+odr-detect = { workspace = true }
+odr-osdp = { workspace = true }
+odr-wiegand = { workspace = true }
+
+[features]
+# `std` only adds `std::error::Error` impls, here and downstream. Everything
+# else is `no_std` + `alloc`, so the crate builds for wasm32-unknown-unknown
+# either way, exactly as in odr-bus, odr-attack and odr-detect. See
+# DESIGN.md section 3.
+default = ["std"]
+std = ["odr-attack/std", "odr-bus/std", "odr-detect/std", "odr-osdp/std"]

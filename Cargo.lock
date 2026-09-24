@@ -76,6 +76,12 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "odr-attack"
 version = "0.1.0"
+dependencies = [
+ "odr-bus",
+ "odr-credential",
+ "odr-osdp",
+ "odr-wiegand",
+]
 
 [[package]]
 name = "odr-bus"
@@ -88,6 +94,12 @@ dependencies = [
 [[package]]
 name = "odr-cli"
 version = "0.1.0"
+dependencies = [
+ "odr-bus",
+ "odr-detect",
+ "odr-osdp",
+ "odr-wiegand",
+]
 
 [[package]]
 name = "odr-credential"
@@ -99,6 +111,11 @@ dependencies = [
 [[package]]
 name = "odr-detect"
 version = "0.1.0"
+dependencies = [
+ "odr-bus",
+ "odr-osdp",
+ "odr-wiegand",
+]
 
 [[package]]
 name = "odr-osdp"
@@ -110,6 +127,14 @@ dependencies = [
 [[package]]
 name = "odr-scenario"
 version = "0.1.0"
+dependencies = [
+ "odr-attack",
+ "odr-bus",
+ "odr-credential",
+ "odr-detect",
+ "odr-osdp",
+ "odr-wiegand",
+]
 
 [[package]]
 name = "odr-wasm"
