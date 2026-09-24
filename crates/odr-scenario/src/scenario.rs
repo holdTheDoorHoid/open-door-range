@@ -1167,7 +1167,12 @@ fn build_osdp_null_cipher(seed: u64) -> Result<Bench> {
         seed,
         OsdpSetup {
             acu,
-            pd: PdConfig::at(PD_ADDRESS).with_default_key(ScRequirement::IfAvailable),
+            // Both directions run MAC-only. The reply half is what makes the
+            // drill's own claim true: the card number crosses an established
+            // Secure Channel in plain sight.
+            pd: PdConfig::at(PD_ADDRESS)
+                .with_default_key(ScRequirement::IfAvailable)
+                .with_null_cipher(),
             access: AccessList::new().with_credential(&cred)?,
             script,
             site_key: Some(SCBK_D),

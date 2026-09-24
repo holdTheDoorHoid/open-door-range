@@ -1757,6 +1757,18 @@ fn drill_4_4(c: &mut Check, ctx: &FlagContext<'_>) {
         String::from("each of them was observed rather than decrypted"),
         String::from("a payload the attacker holds was not simply observed"),
     );
+    c.require(
+        !k.credentials.is_empty(),
+        alloc::format!(
+            "and a card number among them: {} credential(s) read off an established Secure \
+             Channel without a key",
+            k.credentials.len()
+        ),
+        String::from(
+            "no card number has been read off the link yet: present a card, so the reply carries \
+             one",
+        ),
+    );
     let sent = tap_transmissions(world);
     c.require(
         sent == 0,

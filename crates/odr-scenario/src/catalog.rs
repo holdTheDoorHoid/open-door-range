@@ -1266,21 +1266,20 @@ pub const DRILLS: &[Drill] = &[
         objective: "Read a payload off a link that is MACed and not encrypted.",
         flag_text: "The attacker recovered a payload in the clear from a link with Secure Channel \
                     established, where the frames carried a MAC and no encryption.",
-        note: "The curriculum words this flag as reading a *card number*, and this bench cannot \
-               produce that frame: the peripheral model in `odr-bus` always asks for encryption \
-               on its card reads, so the null cipher is reachable in the command direction only. \
-               What you will read here is the door-open command, in the clear, inside an \
-               established session — which is the same lesson and arguably a worse finding. \
-               Making the literal flag reachable needs one field on the peripheral's \
-               configuration, and that is a change to another crate rather than something to work \
-               around here.",
+        note: "Both directions run MAC-only on this bench, so both halves of the lesson are \
+               here: the card number crosses in plain sight on the reply, and the door-open \
+               command crosses in plain sight on the way out. The second is arguably the worse \
+               finding — anyone on the wire can read which door opened and when, and the status \
+               display says Secure Channel is established the whole time.",
         guidance: Guidance {
             bronze: &[
                 "Check the security panel. Secure Channel is established and encryption is off.",
                 "Clip a passive probe on and run.",
                 "Present a card so the controller drives the strike.",
-                "Find CMD_OUT. The security block is SCS_15, the frame carries a MAC, and the \
-                 payload is readable without any key.",
+                "Find the card read. The security block says SCS_16, the frame carries a MAC, \
+                 and the card number is readable without any key.",
+                "Then find CMD_OUT going the other way. The door-open command is in the clear \
+                 too, so a listener learns which door and when.",
                 "Compare that with the same drill in 3.2, where the payload was genuinely \
                  opaque.",
             ],
